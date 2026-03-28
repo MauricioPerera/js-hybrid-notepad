@@ -984,7 +984,10 @@ Texto: ${text.slice(0, 500)}`,
   function renderFolderBar() {
     const folders = getFolders();
     const bar = document.getElementById('folder-bar');
-    let html = `<button class="folder-chip ${!currentFolder ? 'active' : ''}" onclick="setFolder(null)">Todas</button>`;
+    if (folders.length === 0 && !currentFolder) { bar.style.display = 'none'; return; }
+    bar.style.display = 'flex';
+    let html = `<span style="font-size:10px;color:var(--muted);margin-right:2px">&#128193;</span>`;
+    html += `<button class="folder-chip ${!currentFolder ? 'active' : ''}" onclick="setFolder(null)">Todas</button>`;
     for (const f of folders) {
       html += `<button class="folder-chip ${currentFolder === f ? 'active' : ''}" onclick="setFolder('${esc(f)}')">${esc(f)}</button>`;
     }
@@ -1000,9 +1003,15 @@ Texto: ${text.slice(0, 500)}`,
   window.newFolder = function() {
     const name = prompt('Nombre de la carpeta:');
     if (!name || !name.trim()) return;
-    currentFolder = name.trim();
+    const folderName = name.trim();
+    // Create a first note inside the folder so it persists
+    const note = notes.insert({ title: '', content: '', tags: [], folder: folderName, createdAt: Date.now(), updatedAt: Date.now() });
+    db.flush(); adapter.persist();
+    currentFolder = folderName;
+    selectNote(note._id);
     renderFolderBar();
     renderNoteList();
+    document.getElementById('editor-title').focus();
   };
 
   window.onFolderChange = function() {
@@ -1187,7 +1196,7 @@ Texto: ${text.slice(0, 500)}`,
     // Filter by current folder
     if (currentFolder) all = all.filter(n => n.folder === currentFolder);
     renderFolderBar();
-    if (all.length === 0) { list.innerHTML = '<div class="empty">' + (currentFolder ? 'Carpeta vacia' : 'Crea tu primera nota<br><small style="color:var(--muted)">o arrastra PDF/TXT aqui</small>') + '</div>'; return; }
+    if (all.length === 0) { list.innerHTML = '<div class="empty">' + (currentFolder ? 'Carpeta "'+esc(currentFolder)+'" vacia<br><small style="color:var(--muted)">Click "+ Nueva" para agregar una nota aqui</small>' : 'Crea tu primera nota<br><small style="color:var(--muted)">o arrastra PDF/TXT aqui</small>') + '</div>'; return; }
     list.innerHTML = all.map(n => `
       <div class="note-item ${n._id===currentNoteId?'active':''}" onclick="selectNote('${n._id}')">
         <div class="title">${esc(n.title||'Sin titulo')}${!currentFolder && n.folder ? ' <span class="folder-label">'+esc(n.folder)+'</span>' : ''}</div>

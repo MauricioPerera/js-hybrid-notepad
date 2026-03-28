@@ -150,6 +150,75 @@ Despues de la primera carga, todo funciona sin internet:
 - [js-doc-store](https://github.com/MauricioPerera/js-doc-store) — Document database
 - [js-browser-agent](https://github.com/MauricioPerera/js-browser-agent) — AI agent con memoria
 
+## Seguridad
+
+- **Markdown URLs**: solo permite `http:`, `https:`, `mailto:`, `#`, y `/` — bloquea `javascript:` y otros protocolos
+- **AI History**: usa event delegation con `data-*` attributes — sin contenido inline en atributos HTML (previene XSS)
+- **IndexedDB**: datos locales, nunca salen del browser
+- **Service Worker**: solo cachea dominios conocidos (HuggingFace, jsDelivr, app propia)
+- **Sin cookies, sin tracking, sin analytics**
+
+## Arquitectura (1,386 lineas)
+
+```
+index.html
+├── CSS (160 LOC)
+│   ├── Dark theme + variables
+│   ├── Layout (panels, editor, AI)
+│   ├── Responsive mobile (view-based navigation)
+│   └── Markdown preview styles
+│
+├── HTML (88 LOC)
+│   ├── Header (model badges, progress, stats)
+│   ├── Panel izquierdo (search, modes, folders, note list)
+│   └── Panel derecho (editor, markdown preview, AI panel)
+│
+└── JavaScript (1,100 LOC)
+    ├── IDBAdapter — IndexedDB con batch getAll()
+    ├── Init — bootstrap + error boundary
+    ├── Model loading — E5 + Qwen3 en paralelo + timing
+    ├── Embedding — embed/embedQuery/indexMissing
+    ├── Knowledge Graph — extractGraph/traverseGraph/getGraphContext
+    ├── LLM — generate/generateStream + thinking mode
+    ├── Markdown — vanilla parser (headings, lists, tables, code, etc.)
+    ├── AI Persistence — saveAIResult/renderAIHistory
+    ├── AI Actions — 7 acciones + pregunta libre + graph RAG
+    ├── Graph Viz — entidades por tipo, relaciones
+    ├── Folders — getFolders/renderBar/newFolder/setFolder
+    ├── Note CRUD — new/delete/select/save + graph cleanup
+    ├── Search — 4 modos con folder filter
+    ├── Render — noteList/searchResults/stats
+    ├── File Import — PDF.js + TXT/MD + drag&drop
+    ├── Export/Import — JSON backup/restore
+    └── persistAll() — flush centralizado
+```
+
+## Changelog
+
+### v1.2 (actual)
+- Fix XSS en AI history (event delegation)
+- Fix XSS en Markdown URLs (sanitize protocol)
+- Fix import hereda carpeta activa
+- Fix search filtra por carpeta
+- Fix await en todas las escrituras a IndexedDB
+- Refactor: `persistAll()` reemplaza 9 patrones duplicados
+- Error boundary en init()
+
+### v1.1
+- Carpetas para organizar notas
+- AI persistence (historial guardado por nota)
+- PDF/TXT/MD import con drag & drop
+- Markdown rendering con preview toggle
+- Knowledge Graph (entity extraction + BFS traversal)
+- Thinking mode toggle para Qwen3
+
+### v1.0
+- Notepad con busqueda hibrida (semantic + BM25 + RRF)
+- Qwen3-0.6B local (WebGPU/WASM)
+- multilingual-e5-small para embeddings
+- PWA instalable + Service Worker offline
+- IndexedDB persistence
+
 ## Licencia
 
 MIT

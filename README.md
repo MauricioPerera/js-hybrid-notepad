@@ -1,12 +1,13 @@
 # Hybrid Notepad
 
-Block de notas con busqueda hibrida (semantica + texto) que funciona 100% offline en el browser.
+Block de notas con AI local + busqueda hibrida (semantica + texto) que funciona 100% offline en el browser.
 
 ## Como funciona
 
 ```
 Browser (100% offline despues de la primera carga)
-├── Transformers.js        → multilingual-e5-small (ONNX/WASM, 384 dims)
+├── Qwen3-0.6B (Q4)       → LLM local (resumir, tags, preguntas, expandir, traducir)
+├── multilingual-e5-small  → embeddings (ONNX/WASM, 384 dims)
 ├── js-vector-store        → PolarQuantizedStore (3-bit, busqueda semantica)
 ├── js-vector-store BM25   → BM25Index (busqueda por texto)
 ├── js-vector-store Hybrid → HybridSearch (RRF fusion)
@@ -14,7 +15,22 @@ Browser (100% offline despues de la primera carga)
 └── IndexedDB              → persistencia (sobrevive refresh + cierre)
 ```
 
-Zero backend. Zero API keys. El modelo de embeddings se descarga una vez y se cachea en el browser.
+Zero backend. Zero API keys. Los modelos se descargan una vez (~415MB total) y se cachean en el browser.
+
+## AI local (Qwen3-0.6B)
+
+El LLM corre directo en tu browser via WebGPU (o WASM como fallback). Acciones disponibles:
+
+| Accion | Que hace |
+|---|---|
+| **Resumir** | Resume la nota en puntos clave |
+| **Auto-tag** | Genera tags automaticamente y los guarda |
+| **Preguntas clave** | Identifica las preguntas que la nota responde |
+| **Expandir** | Desarrolla las ideas con mas detalle |
+| **Traducir EN** | Traduce la nota al ingles |
+| **Pregunta libre** | Pregunta cualquier cosa sobre la nota (con RAG) |
+
+Las preguntas libres usan RAG: buscan notas relacionadas para dar contexto adicional al LLM.
 
 ## Uso
 

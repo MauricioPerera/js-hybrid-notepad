@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hybrid Notepad — Offline Semantic Search</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0a0a0a; --surface: #141414; --surface2: #1a1a1a; --border: #2a2a2a;
+    --text: #e0e0e0; --muted: #888; --accent: #3b82f6; --accent2: #8b5cf6;
+    --green: #22c55e; --yellow: #eab308; --red: #ef4444;
+  }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+
+  /* Header */
+  .header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 16px; background: var(--surface); }
+  .header h1 { font-size: 16px; font-weight: 600; flex-shrink: 0; }
+  .model-status { font-size: 11px; padding: 3px 8px; border-radius: 10px; }
+  .model-status.loading { background: #1a1a00; color: var(--yellow); }
+  .model-status.ready { background: #0a1a0a; color: var(--green); }
+  .model-status.error { background: #1a0a0a; color: var(--red); }
+  .header-stats { margin-left: auto; font-size: 12px; color: var(--muted); }
+
+  /* Layout */
+  .app { flex: 1; display: flex; overflow: hidden; }
+  .panel { display: flex; flex-direction: column; }
+  .panel-left { width: 400px; border-right: 1px solid var(--border); }
+  .panel-right { flex: 1; }
+
+  /* Search bar */
+  .search-bar { padding: 12px; border-bottom: 1px solid var(--border); }
+  .search-input { width: 100%; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; }
+  .search-input:focus { outline: none; border-color: var(--accent); }
+  .search-modes { display: flex; gap: 6px; margin-top: 8px; }
+  .mode-btn { padding: 4px 10px; font-size: 11px; border: 1px solid var(--border); border-radius: 14px; background: transparent; color: var(--muted); cursor: pointer; }
+  .mode-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
+  .mode-btn:hover:not(.active) { border-color: var(--muted); color: var(--text); }
+
+  /* Note list */
+  .note-list { flex: 1; overflow-y: auto; }
+  .note-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .note-item:hover { background: var(--surface2); }
+  .note-item.active { background: var(--surface2); border-left: 3px solid var(--accent); }
+  .note-item .title { font-size: 14px; font-weight: 500; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .note-item .preview { font-size: 12px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .note-item .meta { font-size: 11px; color: var(--muted); margin-top: 4px; display: flex; justify-content: space-between; }
+  .note-item .score { font-size: 10px; background: var(--accent); color: white; padding: 1px 6px; border-radius: 8px; }
+  .note-item .score.bm25 { background: var(--accent2); }
+  .note-item .score.hybrid { background: var(--green); color: #000; }
+
+  /* Editor */
+  .editor-area { flex: 1; display: flex; flex-direction: column; }
+  .editor-toolbar { padding: 8px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .editor-title { flex: 1; padding: 6px 10px; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--text); font-size: 15px; font-weight: 600; }
+  .editor-title:focus { outline: none; border-color: var(--border); background: var(--bg); }
+  .editor-content { flex: 1; padding: 16px 20px; }
+  .editor-content textarea { width: 100%; height: 100%; background: transparent; border: none; color: var(--text); font-size: 14px; line-height: 1.6; resize: none; font-family: inherit; }
+  .editor-content textarea:focus { outline: none; }
+  .editor-footer { padding: 8px 16px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+
+  /* Buttons */
+  .btn { padding: 6px 12px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .btn:hover { opacity: 0.9; }
+  .btn-sm { padding: 4px 8px; font-size: 11px; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+  .btn-outline:hover { border-color: var(--muted); color: var(--text); }
+  .btn-danger { background: var(--red); }
+
+  /* Empty state */
+  .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 14px; text-align: center; padding: 20px; }
+
+  /* Progress */
+  .progress-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .progress-fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+
+  @media (max-width: 768px) {
+    .app { flex-direction: column; }
+    .panel-left { width: 100%; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Hybrid Notepad</h1>
+  <div class="model-status loading" id="model-status">Cargando modelo...</div>
+  <div id="progress-container" style="flex:1;max-width:200px;">
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+  </div>
+  <div class="header-stats" id="header-stats">0 notas</div>
+</div>
+
+<div class="app">
+  <!-- Left: Search + Note list -->
+  <div class="panel panel-left">
+    <div class="search-bar">
+      <input type="text" class="search-input" id="search-input" placeholder="Buscar notas..." oninput="onSearch()" />
+      <div class="search-modes">
+        <button class="mode-btn active" data-mode="hybrid" onclick="setMode('hybrid')">Hibrida</button>
+        <button class="mode-btn" data-mode="semantic" onclick="setMode('semantic')">Semantica</button>
+        <button class="mode-btn" data-mode="text" onclick="setMode('text')">Texto (BM25)</button>
+      </div>
+    </div>
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border)">
+      <button class="btn btn-sm" onclick="newNote()">+ Nueva nota</button>
+    </div>
+    <div class="note-list" id="note-list">
+      <div class="empty">Crea tu primera nota</div>
+    </div>
+  </div>
+
+  <!-- Right: Editor -->
+  <div class="panel panel-right">
+    <div class="editor-area" id="editor-area" style="display:none">
+      <div class="editor-toolbar">
+        <input type="text" class="editor-title" id="editor-title" placeholder="Titulo de la nota" oninput="onTitleChange()" />
+        <button class="btn btn-sm btn-outline btn-danger" onclick="deleteNote()">Eliminar</button>
+      </div>
+      <div class="editor-content">
+        <textarea id="editor-text" placeholder="Escribe aqui..." oninput="onTextChange()"></textarea>
+      </div>
+      <div class="editor-footer" id="editor-footer"></div>
+    </div>
+    <div class="empty" id="editor-empty">Selecciona o crea una nota</div>
+  </div>
+</div>
+
+<script src="js-vector-store.js"></script>
+<script src="js-doc-store.js"></script>
+
+<script type="module">
+  import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+
+  // ── State ──────────────────────────────────────────────
+
+  let embedder = null;
+  let db, notes, vecStore, bm25, hybrid;
+  let currentNoteId = null;
+  let searchMode = 'hybrid';
+  let saveTimer = null;
+  const DIM = 384; // multilingual-e5-small dimension
+
+  // ── IndexedDB Adapter ─────────────────────────────────
+
+  class IDBAdapter {
+    constructor(dbName = 'hybrid-notepad') {
+      this.dbName = dbName;
+      this._cache = new Map();
+      this._db = null;
+    }
+
+    async init() {
+      this._db = await new Promise((resolve, reject) => {
+        const req = indexedDB.open(this.dbName, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('data');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      // Load all keys into cache
+      const tx = this._db.transaction('data', 'readonly');
+      const store = tx.objectStore('data');
+      const keys = await new Promise(r => { const req = store.getAllKeys(); req.onsuccess = () => r(req.result); });
+      for (const key of keys) {
+        const val = await new Promise(r => {
+          const req2 = this._db.transaction('data', 'readonly').objectStore('data').get(key);
+          req2.onsuccess = () => r(req2.result);
+        });
+        this._cache.set(key, val);
+      }
+    }
+
+    readJson(k) { return this._cache.get('json:' + k) ?? null; }
+    writeJson(k, v) { this._cache.set('json:' + k, v); }
+    readBin(k) { return this._cache.get('bin:' + k) ?? null; }
+    writeBin(k, v) { this._cache.set('bin:' + k, v); }
+    delete(k) { this._cache.delete('json:' + k); this._cache.delete('bin:' + k); }
+
+    async persist() {
+      const tx = this._db.transaction('data', 'readwrite');
+      const store = tx.objectStore('data');
+      for (const [k, v] of this._cache) store.put(v, k);
+      await new Promise((r, j) => { tx.oncomplete = r; tx.onerror = j; });
+    }
+  }
+
+  // ── Init ──────────────────────────────────────────────
+
+  const adapter = new IDBAdapter();
+
+  async function init() {
+    // 1. Init storage
+    await adapter.init();
+
+    db = new DocStore(adapter);
+    notes = db.collection('notes');
+
+    vecStore = new PolarQuantizedStore(adapter, DIM);
+    bm25 = new BM25Index();
+    hybrid = new HybridSearch(vecStore, bm25, 'rrf');
+
+    // Load BM25 state from adapter
+    bm25.load(adapter, 'notes');
+
+    // Rebuild BM25 from existing notes if needed
+    if (bm25.count('notes') === 0) {
+      const allNotes = notes.find({}).toArray();
+      for (const note of allNotes) {
+        bm25.addDocument('notes', note._id, (note.title || '') + ' ' + (note.content || ''));
+      }
+    }
+
+    renderNoteList();
+    updateStats();
+
+    // 2. Load embedding model
+    setModelStatus('loading', 'Descargando modelo...');
+    try {
+      embedder = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small', {
+        progress_callback: (p) => {
+          if (p.status === 'progress' && p.total) {
+            const pct = Math.round((p.loaded / p.total) * 100);
+            document.getElementById('progress-fill').style.width = pct + '%';
+            setModelStatus('loading', `Descargando... ${pct}%`);
+          }
+          if (p.status === 'ready') {
+            setModelStatus('ready', 'Modelo listo (offline)');
+            document.getElementById('progress-container').style.display = 'none';
+          }
+        }
+      });
+      setModelStatus('ready', 'Modelo listo (offline)');
+      document.getElementById('progress-container').style.display = 'none';
+
+      // Index existing notes that don't have embeddings
+      await indexMissingNotes();
+    } catch (err) {
+      setModelStatus('error', 'Error: ' + err.message);
+      console.error('Model load error:', err);
+    }
+  }
+
+  function setModelStatus(state, text) {
+    const el = document.getElementById('model-status');
+    el.className = 'model-status ' + state;
+    el.textContent = text;
+  }
+
+  // ── Embedding ─────────────────────────────────────────
+
+  async function embed(text) {
+    if (!embedder) throw new Error('Modelo no cargado');
+    // E5 requires 'query: ' or 'passage: ' prefix
+    const output = await embedder('passage: ' + text, { pooling: 'mean', normalize: true });
+    return Array.from(output.data);
+  }
+
+  async function embedQuery(text) {
+    if (!embedder) throw new Error('Modelo no cargado');
+    const output = await embedder('query: ' + text, { pooling: 'mean', normalize: true });
+    return Array.from(output.data);
+  }
+
+  async function indexMissingNotes() {
+    const allNotes = notes.find({}).toArray();
+    let indexed = 0;
+    for (const note of allNotes) {
+      if (!vecStore.has('notes', note._id) && note.content) {
+        const text = (note.title || '') + ' ' + note.content;
+        const vec = await embed(text);
+        vecStore.set('notes', note._id, vec, { title: note.title, preview: note.content.slice(0, 100) });
+        indexed++;
+      }
+    }
+    if (indexed > 0) {
+      vecStore.flush();
+      await adapter.persist();
+      updateStats();
+    }
+  }
+
+  // ── Note CRUD ─────────────────────────────────────────
+
+  window.newNote = function() {
+    const note = notes.insert({
+      title: '',
+      content: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    db.flush();
+    adapter.persist();
+    selectNote(note._id);
+    renderNoteList();
+    document.getElementById('editor-title').focus();
+  };
+
+  window.deleteNote = function() {
+    if (!currentNoteId) return;
+    if (!confirm('Eliminar esta nota?')) return;
+    notes.removeById(currentNoteId);
+    bm25.removeDocument('notes', currentNoteId);
+    vecStore.remove('notes', currentNoteId);
+    db.flush();
+    bm25.save(adapter, 'notes');
+    vecStore.flush();
+    adapter.persist();
+    currentNoteId = null;
+    document.getElementById('editor-area').style.display = 'none';
+    document.getElementById('editor-empty').style.display = 'flex';
+    renderNoteList();
+    updateStats();
+  };
+
+  function selectNote(id) {
+    currentNoteId = id;
+    const note = notes.findById(id);
+    if (!note) return;
+    document.getElementById('editor-title').value = note.title || '';
+    document.getElementById('editor-text').value = note.content || '';
+    document.getElementById('editor-area').style.display = 'flex';
+    document.getElementById('editor-empty').style.display = 'none';
+    document.getElementById('editor-footer').textContent =
+      `Creada: ${new Date(note.createdAt).toLocaleString()} | Editada: ${new Date(note.updatedAt).toLocaleString()}`;
+    renderNoteList();
+  }
+
+  window.onTitleChange = function() { scheduleSave(); };
+  window.onTextChange = function() { scheduleSave(); };
+
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveCurrentNote(), 500);
+  }
+
+  async function saveCurrentNote() {
+    if (!currentNoteId) return;
+    const title = document.getElementById('editor-title').value;
+    const content = document.getElementById('editor-text').value;
+
+    notes.update({ _id: currentNoteId }, {
+      $set: { title, content, updatedAt: Date.now() }
+    });
+    db.flush();
+
+    // Update BM25
+    bm25.removeDocument('notes', currentNoteId);
+    bm25.addDocument('notes', currentNoteId, (title || '') + ' ' + content);
+    bm25.save(adapter, 'notes');
+
+    // Update vector (if model ready)
+    if (embedder && content.length > 0) {
+      const text = (title || '') + ' ' + content;
+      const vec = await embed(text);
+      vecStore.set('notes', currentNoteId, vec, { title, preview: content.slice(0, 100) });
+      vecStore.flush();
+    }
+
+    await adapter.persist();
+
+    document.getElementById('editor-footer').textContent =
+      `Guardada: ${new Date().toLocaleString()}`;
+    renderNoteList();
+    updateStats();
+  }
+
+  // ── Search ────────────────────────────────────────────
+
+  let searchTimer = null;
+  window.onSearch = function() {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => doSearch(), 200);
+  };
+
+  async function doSearch() {
+    const query = document.getElementById('search-input').value.trim();
+    if (!query) { renderNoteList(); return; }
+
+    const results = [];
+
+    if (searchMode === 'text' || !embedder) {
+      // BM25 only
+      const bm25Results = bm25.search('notes', query, 20);
+      for (const r of bm25Results) {
+        const note = notes.findById(r.id);
+        if (note) results.push({ ...note, score: r.score, scoreType: 'bm25' });
+      }
+    } else if (searchMode === 'semantic') {
+      // Vector only
+      const qVec = await embedQuery(query);
+      if (vecStore.count('notes') > 0) {
+        const vecResults = vecStore.search('notes', qVec, 20);
+        for (const r of vecResults) {
+          const note = notes.findById(r.id);
+          if (note) results.push({ ...note, score: r.score, scoreType: 'semantic' });
+        }
+      }
+    } else {
+      // Hybrid (RRF)
+      if (vecStore.count('notes') > 0) {
+        const qVec = await embedQuery(query);
+        const hybridResults = hybrid.search('notes', qVec, query, 20);
+        for (const r of hybridResults) {
+          const note = notes.findById(r.id);
+          if (note) results.push({ ...note, score: r.score, scoreType: 'hybrid' });
+        }
+      } else {
+        // Fallback to BM25
+        const bm25Results = bm25.search('notes', query, 20);
+        for (const r of bm25Results) {
+          const note = notes.findById(r.id);
+          if (note) results.push({ ...note, score: r.score, scoreType: 'bm25' });
+        }
+      }
+    }
+
+    renderSearchResults(results);
+  }
+
+  window.setMode = function(mode) {
+    searchMode = mode;
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    const query = document.getElementById('search-input').value.trim();
+    if (query) doSearch();
+  };
+
+  // ── Render ────────────────────────────────────────────
+
+  function renderNoteList() {
+    const list = document.getElementById('note-list');
+    const allNotes = notes.find({}).sort({ updatedAt: -1 }).toArray();
+
+    if (allNotes.length === 0) {
+      list.innerHTML = '<div class="empty">Crea tu primera nota</div>';
+      return;
+    }
+
+    list.innerHTML = allNotes.map(n => `
+      <div class="note-item ${n._id === currentNoteId ? 'active' : ''}" onclick="selectNote('${n._id}')">
+        <div class="title">${esc(n.title || 'Sin titulo')}</div>
+        <div class="preview">${esc((n.content || '').slice(0, 120))}</div>
+        <div class="meta">
+          <span>${timeAgo(n.updatedAt)}</span>
+        </div>
+      </div>
+    `).join('');
+  }
+  window.selectNote = selectNote;
+
+  function renderSearchResults(results) {
+    const list = document.getElementById('note-list');
+    if (results.length === 0) {
+      list.innerHTML = '<div class="empty">Sin resultados</div>';
+      return;
+    }
+
+    list.innerHTML = results.map(n => `
+      <div class="note-item ${n._id === currentNoteId ? 'active' : ''}" onclick="selectNote('${n._id}')">
+        <div class="title">
+          ${esc(n.title || 'Sin titulo')}
+          <span class="score ${n.scoreType}">${n.score.toFixed(4)}</span>
+        </div>
+        <div class="preview">${esc((n.content || '').slice(0, 120))}</div>
+        <div class="meta">
+          <span>${timeAgo(n.updatedAt)}</span>
+          <span>${n.scoreType}</span>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function updateStats() {
+    const count = notes.count();
+    const vecs = vecStore.count('notes');
+    document.getElementById('header-stats').textContent =
+      `${count} nota${count !== 1 ? 's' : ''} | ${vecs} embeddings`;
+  }
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+  function timeAgo(ts) {
+    const diff = Date.now() - ts;
+    if (diff < 60000) return 'ahora';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h';
+    return Math.floor(diff / 86400000) + 'd';
+  }
+
+  // ── Boot ──────────────────────────────────────────────
+  init();
+</script>
+</body>
+</html>

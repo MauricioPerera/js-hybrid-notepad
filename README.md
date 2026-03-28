@@ -219,6 +219,10 @@ index.html
 - PWA instalable + Service Worker offline
 - IndexedDB persistence
 
+## Creditos
+
+Creado por [Mauricio Perera](https://www.linkedin.com/in/mauricioperera/)
+
 ## Licencia
 
 MIT

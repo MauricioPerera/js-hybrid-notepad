@@ -45,6 +45,7 @@
   .note-item .score { font-size: 9px; background: var(--accent); color: white; padding: 1px 5px; border-radius: 8px; }
   .note-item .score.bm25 { background: var(--accent2); }
   .note-item .score.hybrid { background: var(--green); color: #000; }
+  .note-item .score.graph { background: var(--orange); color: #000; }
   .note-item .tags { display: flex; gap: 3px; margin-top: 3px; flex-wrap: wrap; }
   .note-item .tag { font-size: 9px; background: var(--surface2); border: 1px solid var(--border); padding: 1px 5px; border-radius: 8px; color: var(--muted); }
 
@@ -107,6 +108,7 @@
         <button class="mode-btn active" data-mode="hybrid" onclick="setMode('hybrid')">Hibrida</button>
         <button class="mode-btn" data-mode="semantic" onclick="setMode('semantic')">Semantica</button>
         <button class="mode-btn" data-mode="text" onclick="setMode('text')">BM25</button>
+        <button class="mode-btn" data-mode="graph" onclick="setMode('graph')">Graph</button>
       </div>
     </div>
     <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
@@ -141,6 +143,8 @@
             <button class="ai-btn" onclick="aiAction('questions')" id="ai-questions">Preguntas clave</button>
             <button class="ai-btn" onclick="aiAction('expand')" id="ai-expand">Expandir</button>
             <button class="ai-btn" onclick="aiAction('translate')" id="ai-translate">Traducir EN</button>
+            <button class="ai-btn" onclick="aiAction('extract')" id="ai-extract">Extraer grafo</button>
+            <button class="ai-btn" onclick="showGraph()" id="ai-graph">Ver grafo</button>
           </div>
           <div class="ai-output" id="ai-output"><span style="color:var(--muted)">Selecciona una accion o escribe una pregunta sobre la nota.</span></div>
           <div class="ai-input">
@@ -172,6 +176,7 @@
 
   let embedder = null, generator = null;
   let db, notes, vecStore, bm25, hybrid;
+  let graphNodes, graphEdges; // Knowledge Graph
   let currentNoteId = null, searchMode = 'hybrid', saveTimer = null;
   let aiGenerating = false;
   let thinkingEnabled = false;
@@ -216,6 +221,8 @@
     await adapter.init();
     db = new DocStore(adapter);
     notes = db.collection('notes');
+    graphNodes = db.collection('graph_nodes');
+    graphEdges = db.collection('graph_edges');
     vecStore = new PolarQuantizedStore(adapter, DIM);
     bm25 = new BM25Index();
     hybrid = new HybridSearch(vecStore, bm25, 'rrf');
@@ -223,6 +230,12 @@
     if (bm25.count('notes') === 0) {
       for (const n of notes.find({}).toArray()) bm25.addDocument('notes', n._id, (n.title||'')+' '+(n.content||''));
     }
+    // Create graph indexes
+    try { graphNodes.createIndex('name'); } catch {}
+    try { graphNodes.createIndex('type'); } catch {}
+    try { graphEdges.createIndex('from'); } catch {}
+    try { graphEdges.createIndex('to'); } catch {}
+    try { graphEdges.createIndex('noteId'); } catch {}
     renderNoteList(); updateStats();
 
     // Load models in parallel
@@ -303,6 +316,126 @@
       }
     }
     if (n > 0) { vecStore.flush(); await adapter.persist(); updateStats(); }
+  }
+
+  // ── Knowledge Graph ──────────────────────────────────
+
+  /** Extraer entidades y relaciones de un texto usando Qwen3 */
+  async function extractGraph(noteId, text) {
+    if (!generator || !text || text.length < 20) return;
+
+    try {
+      const result = await generate(
+        `Extrae entidades y relaciones del siguiente texto.
+Retorna SOLO un JSON con este formato exacto, sin markdown:
+{"entities":[{"name":"Nombre","type":"person|org|project|place|concept|tech"}],"relations":[{"from":"Entidad1","to":"Entidad2","rel":"descripcion corta"}]}
+
+Si no hay entidades claras, retorna {"entities":[],"relations":[]}
+
+Texto: ${text.slice(0, 500)}`,
+        { system: 'Eres un extractor de entidades. Responde SOLO JSON valido.', maxTokens: 300 }
+      );
+
+      let cleaned = result.trim();
+      if (cleaned.includes('```')) cleaned = cleaned.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      // Find JSON in response
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return;
+
+      const data = JSON.parse(jsonMatch[0]);
+      if (!data.entities || !Array.isArray(data.entities)) return;
+
+      // Remove old graph data for this note
+      const oldEdges = graphEdges.find({ noteId }).toArray();
+      for (const e of oldEdges) graphEdges.removeById(e._id);
+
+      // Upsert entities
+      for (const ent of data.entities) {
+        if (!ent.name || ent.name.length < 2) continue;
+        const name = ent.name.trim().toLowerCase();
+        const existing = graphNodes.findOne({ name });
+        if (!existing) {
+          graphNodes.insert({ name, type: ent.type || 'concept', label: ent.name.trim(), noteIds: [noteId], createdAt: Date.now() });
+        } else if (!existing.noteIds?.includes(noteId)) {
+          graphNodes.update({ _id: existing._id }, { $push: { noteIds: noteId } });
+        }
+      }
+
+      // Insert relations
+      for (const rel of (data.relations || [])) {
+        if (!rel.from || !rel.to || !rel.rel) continue;
+        graphEdges.insert({
+          from: rel.from.trim().toLowerCase(),
+          to: rel.to.trim().toLowerCase(),
+          rel: rel.rel,
+          noteId,
+          createdAt: Date.now(),
+        });
+      }
+
+      db.flush();
+      await adapter.persist();
+    } catch { /* extraction failed, not critical */ }
+  }
+
+  /** BFS traversal del grafo desde un set de entidades iniciales */
+  function traverseGraph(startEntities, maxDepth = 2) {
+    const visited = new Set();
+    const context = []; // { entity, relation, depth }
+    let frontier = startEntities.map(e => ({ name: e.toLowerCase(), depth: 0 }));
+
+    while (frontier.length > 0) {
+      const next = [];
+      for (const { name, depth } of frontier) {
+        if (visited.has(name) || depth > maxDepth) continue;
+        visited.add(name);
+
+        const node = graphNodes.findOne({ name });
+        if (node) context.push({ entity: node.label || name, type: node.type, depth });
+
+        // Find edges from this entity
+        const outEdges = graphEdges.find({ from: name }).toArray();
+        const inEdges = graphEdges.find({ to: name }).toArray();
+
+        for (const e of outEdges) {
+          context.push({ from: name, to: e.to, rel: e.rel, depth });
+          if (!visited.has(e.to)) next.push({ name: e.to, depth: depth + 1 });
+        }
+        for (const e of inEdges) {
+          context.push({ from: e.from, to: name, rel: e.rel, depth });
+          if (!visited.has(e.from)) next.push({ name: e.from, depth: depth + 1 });
+        }
+      }
+      frontier = next;
+    }
+
+    return context;
+  }
+
+  /** Busca entidades mencionadas en un query */
+  function findEntitiesInQuery(query) {
+    const q = query.toLowerCase();
+    const allNodes = graphNodes.find({}).toArray();
+    return allNodes.filter(n => q.includes(n.name)).map(n => n.name);
+  }
+
+  /** Genera contexto de grafo para un query */
+  function getGraphContext(query) {
+    const entities = findEntitiesInQuery(query);
+    if (entities.length === 0) return '';
+
+    const subgraph = traverseGraph(entities, 2);
+    if (subgraph.length === 0) return '';
+
+    const lines = [];
+    const seen = new Set();
+    for (const item of subgraph) {
+      if (item.rel) {
+        const key = `${item.from}-${item.rel}-${item.to}`;
+        if (!seen.has(key)) { lines.push(`${item.from} --[${item.rel}]--> ${item.to}`); seen.add(key); }
+      }
+    }
+    return lines.length > 0 ? 'Relaciones conocidas:\n' + lines.join('\n') : '';
   }
 
   // ── LLM (Qwen3 local) ────────────────────────────────
@@ -417,6 +550,16 @@
       translate: { system: 'Translate the following text to English. Only output the translation, no explanations.', prompt: text },
     };
 
+    // Manual graph extraction
+    if (action === 'extract') {
+      output.innerHTML = '<span class="generating">Extrayendo entidades...</span>';
+      await extractGraph(currentNoteId, text);
+      const nodeCount = graphNodes.count();
+      const edgeCount = graphEdges.count();
+      output.textContent = `Grafo actualizado: ${nodeCount} entidades, ${edgeCount} relaciones.`;
+      return;
+    }
+
     const cfg = prompts[action];
     const result = await generateStream(cfg.prompt, output, { system: cfg.system, maxTokens: cfg.maxTokens || 300 });
 
@@ -456,11 +599,73 @@
       }
     }
 
+    // Graph RAG: traverse knowledge graph for connected context
+    let graphContext = getGraphContext(question);
+    if (graphContext) graphContext = '\n\n' + graphContext;
+
     await generateStream(
-      `Contexto (nota actual):\n${text}${ragContext}\n\nPregunta: ${question}`,
+      `Contexto (nota actual):\n${text}${ragContext}${graphContext}\n\nPregunta: ${question}`,
       output,
-      { system: 'Responde preguntas usando el contexto proporcionado. Se preciso y conciso.' }
+      { system: 'Responde preguntas usando el contexto proporcionado, incluyendo relaciones del grafo de conocimiento. Se preciso y conciso.' }
     );
+  };
+
+  // ── Graph visualization ─────────────────────────────
+
+  window.showGraph = function() {
+    const output = document.getElementById('ai-output');
+    const allNodes = graphNodes.find({}).toArray();
+    const allEdges = graphEdges.find({}).toArray();
+
+    if (allNodes.length === 0) {
+      output.textContent = 'Grafo vacio. Escribe notas y usa "Extraer grafo" para poblar el knowledge graph.';
+      return;
+    }
+
+    // If viewing a specific note, show its subgraph
+    let relevantEdges = allEdges;
+    let relevantNodes = allNodes;
+    if (currentNoteId) {
+      relevantEdges = allEdges.filter(e => e.noteId === currentNoteId);
+      const entityNames = new Set();
+      relevantEdges.forEach(e => { entityNames.add(e.from); entityNames.add(e.to); });
+      if (entityNames.size > 0) {
+        relevantNodes = allNodes.filter(n => entityNames.has(n.name));
+      }
+    }
+
+    // Build text representation
+    let html = `<div style="margin-bottom:8px;font-size:11px;color:var(--orange)">Knowledge Graph: ${allNodes.length} entidades, ${allEdges.length} relaciones</div>`;
+
+    // Group by type
+    const byType = new Map();
+    for (const n of relevantNodes) {
+      const t = n.type || 'concept';
+      if (!byType.has(t)) byType.set(t, []);
+      byType.get(t).push(n);
+    }
+
+    const typeColors = { person: '#3b82f6', org: '#22c55e', project: '#f97316', place: '#eab308', tech: '#8b5cf6', concept: '#888' };
+
+    for (const [type, nodes] of byType) {
+      const color = typeColors[type] || '#888';
+      html += `<div style="margin:6px 0 2px;font-size:10px;text-transform:uppercase;color:${color}">${type}</div>`;
+      html += nodes.map(n => `<span style="display:inline-block;padding:2px 8px;margin:2px;border-radius:10px;font-size:11px;background:${color}22;border:1px solid ${color}44;color:${color}">${esc(n.label || n.name)}</span>`).join('');
+    }
+
+    // Show relations
+    if (relevantEdges.length > 0) {
+      html += `<div style="margin:10px 0 4px;font-size:10px;text-transform:uppercase;color:var(--muted)">Relaciones</div>`;
+      const seen = new Set();
+      for (const e of relevantEdges) {
+        const key = `${e.from}|${e.rel}|${e.to}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        html += `<div style="font-size:11px;padding:2px 0;color:var(--text)">${esc(e.from)} <span style="color:var(--orange)">→ ${esc(e.rel)} →</span> ${esc(e.to)}</div>`;
+      }
+    }
+
+    output.innerHTML = html;
   };
 
   // ── Note CRUD ─────────────────────────────────────────
@@ -519,6 +724,11 @@
       if (vec) { vecStore.set('notes', currentNoteId, vec, { title, preview: content.slice(0,100) }); vecStore.flush(); }
     }
     await adapter.persist();
+
+    // Extract graph entities (async, non-blocking)
+    if (generator && content.length > 20) {
+      extractGraph(currentNoteId, (title||'') + ' ' + content).catch(() => {});
+    }
     const words = content.split(/\s+/).filter(Boolean).length;
     document.getElementById('editor-footer-left').textContent = 'Guardada: ' + new Date().toLocaleTimeString();
     document.getElementById('editor-footer-right').textContent = words + ' palabras';
@@ -534,7 +744,37 @@
     const q = document.getElementById('search-input').value.trim();
     if (!q) { renderNoteList(); return; }
     const results = [];
-    if (searchMode === 'text' || !embedder) {
+    if (searchMode === 'graph') {
+      // Graph search: find entities matching query, traverse, find notes
+      const entities = findEntitiesInQuery(q);
+      if (entities.length > 0) {
+        const subgraph = traverseGraph(entities, 2);
+        const noteIds = new Set();
+        // Get notes from entities
+        for (const item of subgraph) {
+          if (item.entity) {
+            const node = graphNodes.findOne({ name: item.entity?.toLowerCase() || item.entity });
+            if (node?.noteIds) node.noteIds.forEach(id => noteIds.add(id));
+          }
+          if (item.from) {
+            const fromNode = graphNodes.findOne({ name: item.from });
+            if (fromNode?.noteIds) fromNode.noteIds.forEach(id => noteIds.add(id));
+          }
+          if (item.to) {
+            const toNode = graphNodes.findOne({ name: item.to });
+            if (toNode?.noteIds) toNode.noteIds.forEach(id => noteIds.add(id));
+          }
+        }
+        for (const id of noteIds) {
+          const n = notes.findById(id);
+          if (n) results.push({...n, score: 1, scoreType: 'graph'});
+        }
+      }
+      // Fallback to BM25 if no graph results
+      if (results.length === 0) {
+        for (const r of bm25.search('notes', q, 20)) { const n = notes.findById(r.id); if (n) results.push({...n, score: r.score, scoreType: 'bm25'}); }
+      }
+    } else if (searchMode === 'text' || !embedder) {
       for (const r of bm25.search('notes', q, 20)) { const n = notes.findById(r.id); if (n) results.push({...n, score: r.score, scoreType: 'bm25'}); }
     } else if (searchMode === 'semantic') {
       const qv = await embedQuery(q);
@@ -584,7 +824,10 @@
 
   function updateStats() {
     const c = notes.count(), v = vecStore.count('notes');
-    document.getElementById('header-stats').textContent = c + ' nota'+(c!==1?'s':'')+' | '+v+' emb';
+    const gn = graphNodes.count(), ge = graphEdges.count();
+    let stats = c + ' nota'+(c!==1?'s':'')+' | '+v+' emb';
+    if (gn > 0) stats += ' | '+gn+' nodos '+ge+' edges';
+    document.getElementById('header-stats').textContent = stats;
   }
   // esc defined above
   function timeAgo(t) { const d=Date.now()-t; return d<60000?'ahora':d<3600000?Math.floor(d/60000)+'m':d<86400000?Math.floor(d/3600000)+'h':Math.floor(d/86400000)+'d'; }

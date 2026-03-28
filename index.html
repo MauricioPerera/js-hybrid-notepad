@@ -316,12 +316,25 @@
     }
   }
 
+  // ── Helpers ─────────────────────────────────────────
+
+  async function persistAll() {
+    db.flush();
+    bm25.save(adapter, 'notes');
+    vecStore.flush();
+    await adapter.persist();
+  }
+
   // ── Init ──────────────────────────────────────────────
 
   const adapter = new IDBAdapter();
 
   async function init() {
-    await adapter.init();
+    try { await adapter.init(); } catch(e) {
+      document.getElementById('header-stats').textContent = 'Error: IndexedDB no disponible';
+      console.error('Init failed:', e);
+      return;
+    }
     db = new DocStore(adapter);
     notes = db.collection('notes');
     graphNodes = db.collection('graph_nodes');
@@ -652,11 +665,14 @@ Texto: ${text.slice(0, 500)}`,
     // Inline code
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
+    // Sanitize URLs (block javascript: protocol)
+    function safeUrl(url) { return /^(https?:|mailto:|#|\/)/i.test(url.trim()) ? url : '#'; }
+
     // Images before links
-    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />');
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => `<img src="${safeUrl(url)}" alt="${alt}" />`);
 
     // Links
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => `<a href="${safeUrl(url)}" target="_blank" rel="noopener">${text}</a>`);
 
     // Split into lines for block-level parsing
     const lines = html.split('\n');
@@ -792,7 +808,7 @@ Texto: ${text.slice(0, 500)}`,
     if (type === 'translate') update.translation = content;
 
     notes.update({ _id: noteId }, { $set: update });
-    db.flush(); adapter.persist();
+    await persistAll();
     renderAIHistory(noteId);
   }
 
@@ -806,30 +822,36 @@ Texto: ${text.slice(0, 500)}`,
 
     const typeLabels = { summary: 'Resumen', tags: 'Tags', questions: 'Preguntas', expand: 'Expansion', translate: 'Traduccion', question: 'Pregunta', extract: 'Grafo' };
     container.style.display = 'block';
+    const reversed = note.aiHistory.slice().reverse();
     container.innerHTML = '<div style="padding:6px 12px;font-size:10px;color:var(--orange);text-transform:uppercase">Historial AI</div>' +
-      note.aiHistory.slice().reverse().map(h => `
+      reversed.map((h, i) => `
         <div class="ai-history-item">
           <div class="ai-h-type">${typeLabels[h.type] || h.type}${h.query ? ': ' + esc(h.query) : ''}</div>
           <div class="ai-h-content">${esc(h.content)}</div>
           <div class="ai-h-time">${new Date(h.timestamp).toLocaleString()}</div>
           <div class="ai-h-actions">
-            <button class="ai-h-btn" onclick="copyAI('${esc(h.content.replace(/'/g, "\\'").slice(0, 500))}')">Copiar</button>
-            <button class="ai-h-btn" onclick="appendAI('${esc(h.content.replace(/'/g, "\\'").slice(0, 500))}')">Agregar a nota</button>
+            <button class="ai-h-btn" data-idx="${i}" data-action="copy">Copiar</button>
+            <button class="ai-h-btn" data-idx="${i}" data-action="append">Agregar a nota</button>
           </div>
         </div>
       `).join('');
+
+    // Event delegation (no inline onclick, no XSS risk)
+    container.onclick = function(e) {
+      const btn = e.target.closest('[data-action]');
+      if (!btn) return;
+      const idx = parseInt(btn.dataset.idx);
+      const content = reversed[idx]?.content;
+      if (!content) return;
+      if (btn.dataset.action === 'copy') {
+        navigator.clipboard.writeText(content).catch(() => {});
+      } else if (btn.dataset.action === 'append') {
+        if (!currentNoteId) return;
+        document.getElementById('editor-text').value += '\n\n---\n' + content;
+        onTextChange();
+      }
+    };
   }
-
-  window.copyAI = function(text) {
-    navigator.clipboard.writeText(text).then(() => {}).catch(() => {});
-  };
-
-  window.appendAI = function(text) {
-    if (!currentNoteId) return;
-    const textarea = document.getElementById('editor-text');
-    textarea.value += '\n\n---\n' + text;
-    onTextChange();
-  };
 
   window.aiAction = async function(action) {
     if (aiGenerating || !currentNoteId) return;
@@ -869,7 +891,7 @@ Texto: ${text.slice(0, 500)}`,
       const tags = result.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 1 && t.length < 30);
       if (tags.length > 0) {
         notes.update({ _id: currentNoteId }, { $set: { tags } });
-        db.flush(); await adapter.persist();
+        await persistAll();
         renderNoteList();
       }
     }
@@ -1000,13 +1022,13 @@ Texto: ${text.slice(0, 500)}`,
     renderNoteList();
   };
 
-  window.newFolder = function() {
+  window.newFolder = async function() {
     const name = prompt('Nombre de la carpeta:');
     if (!name || !name.trim()) return;
     const folderName = name.trim();
     // Create a first note inside the folder so it persists
     const note = notes.insert({ title: '', content: '', tags: [], folder: folderName, createdAt: Date.now(), updatedAt: Date.now() });
-    db.flush(); adapter.persist();
+    await persistAll();
     currentFolder = folderName;
     selectNote(note._id);
     renderFolderBar();
@@ -1014,11 +1036,11 @@ Texto: ${text.slice(0, 500)}`,
     document.getElementById('editor-title').focus();
   };
 
-  window.onFolderChange = function() {
+  window.onFolderChange = async function() {
     if (!currentNoteId) return;
     const val = document.getElementById('editor-folder').value;
     notes.update({ _id: currentNoteId }, { $set: { folder: val || null, updatedAt: Date.now() } });
-    db.flush(); adapter.persist();
+    await persistAll();
     renderFolderBar(); renderNoteList();
   };
 
@@ -1034,14 +1056,14 @@ Texto: ${text.slice(0, 500)}`,
 
   // ── Note CRUD ─────────────────────────────────────────
 
-  window.newNote = function() {
+  window.newNote = async function() {
     const note = notes.insert({ title: '', content: '', tags: [], folder: currentFolder || null, createdAt: Date.now(), updatedAt: Date.now() });
-    db.flush(); adapter.persist();
+    await persistAll();
     selectNote(note._id); renderNoteList();
     document.getElementById('editor-title').focus();
   };
 
-  window.deleteNote = function() {
+  window.deleteNote = async function() {
     if (!currentNoteId || !confirm('Eliminar?')) return;
     // Clean graph data for this note
     const noteEdges = graphEdges.find({ noteId: currentNoteId }).toArray();
@@ -1058,7 +1080,7 @@ Texto: ${text.slice(0, 500)}`,
     notes.removeById(currentNoteId);
     bm25.removeDocument('notes', currentNoteId);
     vecStore.remove('notes', currentNoteId);
-    db.flush(); bm25.save(adapter, 'notes'); vecStore.flush(); adapter.persist();
+    await persistAll();
     currentNoteId = null;
     document.getElementById('editor-area').style.display = 'none';
     document.getElementById('editor-empty').style.display = 'flex';
@@ -1179,7 +1201,9 @@ Texto: ${text.slice(0, 500)}`,
         for (const r of bm25.search('notes', q, 20)) { const n = notes.findById(r.id); if (n) results.push({...n, score: r.score, scoreType: 'bm25'}); }
       }
     }
-    renderSearchResults(results);
+    // Filter by current folder
+    const filtered = currentFolder ? results.filter(r => r.folder === currentFolder) : results;
+    renderSearchResults(filtered);
   }
 
   window.setMode = function(m) {
@@ -1257,8 +1281,8 @@ Texto: ${text.slice(0, 500)}`,
       content = await file.text();
     }
 
-    // Create note
-    const note = notes.insert({ title, content, tags: [], createdAt: Date.now(), updatedAt: Date.now() });
+    // Create note (inherits current folder)
+    const note = notes.insert({ title, content, tags: [], folder: currentFolder || null, createdAt: Date.now(), updatedAt: Date.now() });
     bm25.addDocument('notes', note._id, title + ' ' + content);
 
     // Index embedding
@@ -1287,7 +1311,7 @@ Texto: ${text.slice(0, 500)}`,
     }
 
     if (imported > 0) {
-      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await persistAll();
       await adapter.persist();
       renderNoteList(); updateStats();
       // Extract graph for imported notes (async)
@@ -1320,7 +1344,7 @@ Texto: ${text.slice(0, 500)}`,
     }
 
     if (imported > 0) {
-      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await persistAll();
       await adapter.persist();
       renderNoteList(); updateStats();
     }
@@ -1369,7 +1393,7 @@ Texto: ${text.slice(0, 500)}`,
       if (data.graphNodes) for (const n of data.graphNodes) { if (!graphNodes.findById(n._id)) try { graphNodes.insert(n); } catch {} }
       if (data.graphEdges) for (const e of data.graphEdges) { if (!graphEdges.findById(e._id)) try { graphEdges.insert(e); } catch {} }
 
-      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await persistAll();
       await adapter.persist();
       renderNoteList(); updateStats();
       alert('Importadas ' + imported + ' notas nuevas.');

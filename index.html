@@ -41,6 +41,10 @@
   .mode-btn { padding: 3px 8px; font-size: 10px; border: 1px solid var(--border); border-radius: 12px; background: transparent; color: var(--muted); cursor: pointer; }
   .mode-btn.active { background: var(--accent); border-color: var(--accent); color: white; }
 
+  .folder-chip { padding: 3px 8px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; font-size: 10px; white-space: nowrap; }
+  .folder-chip:hover { border-color: var(--muted); color: var(--text); }
+  .folder-chip.active { background: var(--accent); border-color: var(--accent); color: white; }
+  .note-item .folder-label { font-size: 9px; color: var(--accent); background: var(--accent)15; padding: 1px 5px; border-radius: 6px; }
   .note-list { flex: 1; overflow-y: auto; }
   .note-item { padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
   .note-item:hover { background: var(--surface2); }
@@ -185,12 +189,14 @@
     </div>
     <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="newNote()">+ Nueva</button>
+      <button class="btn btn-sm btn-outline" onclick="newFolder()">+ Carpeta</button>
       <button class="btn btn-sm btn-outline" onclick="document.getElementById('pdf-file').click()">PDF</button>
-      <button class="btn btn-sm btn-outline" onclick="exportData()">Exportar</button>
-      <button class="btn btn-sm btn-outline" onclick="document.getElementById('import-file').click()">Importar</button>
+      <button class="btn btn-sm btn-outline" onclick="exportData()">Exp</button>
+      <button class="btn btn-sm btn-outline" onclick="document.getElementById('import-file').click()">Imp</button>
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)" />
       <input type="file" id="pdf-file" accept=".pdf,.txt,.md" style="display:none" onchange="importFile(event)" multiple />
     </div>
+    <div id="folder-bar" style="padding:4px 10px;border-bottom:1px solid var(--border);display:flex;gap:4px;align-items:center;overflow-x:auto;font-size:11px"></div>
     <div class="note-list" id="note-list" ondrop="dropFiles(event)" ondragover="event.preventDefault();this.style.background='var(--surface2)'" ondragleave="this.style.background=''"><div class="empty">Crea tu primera nota<br><small style="color:var(--muted)">o arrastra PDF/TXT aqui</small></div></div>
   </div>
 
@@ -199,6 +205,7 @@
       <div class="editor-toolbar">
         <button class="mobile-back" onclick="mobileBack()">&#8592;</button>
         <input type="text" class="editor-title" id="editor-title" placeholder="Titulo..." oninput="onTitleChange()" />
+        <select id="editor-folder" onchange="onFolderChange()" style="padding:3px 6px;font-size:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--muted);max-width:100px"></select>
         <button class="btn btn-sm btn-outline" id="preview-btn" onclick="togglePreview()">Vista</button>
         <button class="btn btn-sm btn-ai" onclick="toggleAI()">AI</button>
         <button class="btn btn-sm btn-outline btn-danger" onclick="deleteNote()">Eliminar</button>
@@ -263,7 +270,7 @@
   let embedder = null, generator = null;
   let db, notes, vecStore, bm25, hybrid;
   let graphNodes, graphEdges; // Knowledge Graph
-  let currentNoteId = null, searchMode = 'hybrid', saveTimer = null;
+  let currentNoteId = null, currentFolder = null, searchMode = 'hybrid', saveTimer = null;
   let aiGenerating = false;
   let thinkingEnabled = false;
   const DIM = 384;
@@ -892,10 +899,61 @@ Texto: ${text.slice(0, 500)}`,
     output.innerHTML = html;
   };
 
+  // ── Folders ──────────────────────────────────────────
+
+  function getFolders() {
+    const all = notes.find({}).toArray();
+    const folders = new Set();
+    for (const n of all) { if (n.folder) folders.add(n.folder); }
+    return Array.from(folders).sort();
+  }
+
+  function renderFolderBar() {
+    const folders = getFolders();
+    const bar = document.getElementById('folder-bar');
+    let html = `<button class="folder-chip ${!currentFolder ? 'active' : ''}" onclick="setFolder(null)">Todas</button>`;
+    for (const f of folders) {
+      html += `<button class="folder-chip ${currentFolder === f ? 'active' : ''}" onclick="setFolder('${esc(f)}')">${esc(f)}</button>`;
+    }
+    bar.innerHTML = html;
+  }
+
+  window.setFolder = function(folder) {
+    currentFolder = folder;
+    renderFolderBar();
+    renderNoteList();
+  };
+
+  window.newFolder = function() {
+    const name = prompt('Nombre de la carpeta:');
+    if (!name || !name.trim()) return;
+    currentFolder = name.trim();
+    renderFolderBar();
+    renderNoteList();
+  };
+
+  window.onFolderChange = function() {
+    if (!currentNoteId) return;
+    const val = document.getElementById('editor-folder').value;
+    notes.update({ _id: currentNoteId }, { $set: { folder: val || null, updatedAt: Date.now() } });
+    db.flush(); adapter.persist();
+    renderFolderBar(); renderNoteList();
+  };
+
+  function updateFolderSelect(noteFolder) {
+    const select = document.getElementById('editor-folder');
+    const folders = getFolders();
+    let html = '<option value="">Sin carpeta</option>';
+    for (const f of folders) {
+      html += `<option value="${esc(f)}" ${noteFolder === f ? 'selected' : ''}>${esc(f)}</option>`;
+    }
+    select.innerHTML = html;
+  }
+
   // ── Note CRUD ─────────────────────────────────────────
 
   window.newNote = function() {
-    const note = notes.insert({ title: '', content: '', tags: [], createdAt: Date.now(), updatedAt: Date.now() });
+    const note = notes.insert({ title: '', content: '', tags: [], folder: currentFolder || null, createdAt: Date.now(), updatedAt: Date.now() });
     db.flush(); adapter.persist();
     selectNote(note._id); renderNoteList();
     document.getElementById('editor-title').focus();
@@ -940,6 +998,7 @@ Texto: ${text.slice(0, 500)}`,
     document.getElementById('editor-footer-left').textContent = new Date(note.updatedAt).toLocaleString();
     document.getElementById('editor-footer-right').textContent = words + ' palabras';
     document.getElementById('ai-output').innerHTML = '<span style="color:var(--muted)">Selecciona una accion o pregunta sobre la nota.</span>';
+    updateFolderSelect(note.folder);
     // Mobile: switch to editor view
     document.querySelector('.app').classList.add('mobile-view-editor');
     renderNoteList();
@@ -1050,11 +1109,14 @@ Texto: ${text.slice(0, 500)}`,
 
   function renderNoteList() {
     const list = document.getElementById('note-list');
-    const all = notes.find({}).sort({ updatedAt: -1 }).toArray();
-    if (all.length === 0) { list.innerHTML = '<div class="empty">Crea tu primera nota</div>'; return; }
+    let all = notes.find({}).sort({ updatedAt: -1 }).toArray();
+    // Filter by current folder
+    if (currentFolder) all = all.filter(n => n.folder === currentFolder);
+    renderFolderBar();
+    if (all.length === 0) { list.innerHTML = '<div class="empty">' + (currentFolder ? 'Carpeta vacia' : 'Crea tu primera nota<br><small style="color:var(--muted)">o arrastra PDF/TXT aqui</small>') + '</div>'; return; }
     list.innerHTML = all.map(n => `
       <div class="note-item ${n._id===currentNoteId?'active':''}" onclick="selectNote('${n._id}')">
-        <div class="title">${esc(n.title||'Sin titulo')}</div>
+        <div class="title">${esc(n.title||'Sin titulo')}${!currentFolder && n.folder ? ' <span class="folder-label">'+esc(n.folder)+'</span>' : ''}</div>
         <div class="preview">${esc((n.content||'').slice(0,100))}</div>
         ${n.tags&&n.tags.length ? '<div class="tags">'+n.tags.map(t=>'<span class="tag">'+esc(t)+'</span>').join('')+'</div>' : ''}
         <div class="meta"><span>${timeAgo(n.updatedAt)}</span></div>

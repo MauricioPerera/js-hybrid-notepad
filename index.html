@@ -183,13 +183,15 @@
         <button class="mode-btn" data-mode="graph" onclick="setMode('graph')">Graph</button>
       </div>
     </div>
-    <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
+    <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap">
       <button class="btn btn-sm" onclick="newNote()">+ Nueva</button>
+      <button class="btn btn-sm btn-outline" onclick="document.getElementById('pdf-file').click()">PDF</button>
       <button class="btn btn-sm btn-outline" onclick="exportData()">Exportar</button>
       <button class="btn btn-sm btn-outline" onclick="document.getElementById('import-file').click()">Importar</button>
       <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)" />
+      <input type="file" id="pdf-file" accept=".pdf,.txt,.md" style="display:none" onchange="importFile(event)" multiple />
     </div>
-    <div class="note-list" id="note-list"><div class="empty">Crea tu primera nota</div></div>
+    <div class="note-list" id="note-list" ondrop="dropFiles(event)" ondragover="event.preventDefault();this.style.background='var(--surface2)'" ondragleave="this.style.background=''"><div class="empty">Crea tu primera nota<br><small style="color:var(--muted)">o arrastra PDF/TXT aqui</small></div></div>
   </div>
 
   <div class="panel panel-right">
@@ -256,6 +258,7 @@
 
 <script type="module">
   import { pipeline, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+  import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/+esm';
 
   let embedder = null, generator = null;
   let db, notes, vecStore, bm25, hybrid;
@@ -1078,6 +1081,106 @@ Texto: ${text.slice(0, 500)}`,
   }
   // esc defined above
   function timeAgo(t) { const d=Date.now()-t; return d<60000?'ahora':d<3600000?Math.floor(d/60000)+'m':d<86400000?Math.floor(d/3600000)+'h':Math.floor(d/86400000)+'d'; }
+
+  // ── File Import (PDF/TXT/MD) ─────────────────────────
+
+  async function parsePDF(arrayBuffer, filename) {
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pages = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const text = content.items.map(item => item.str).join(' ');
+      if (text.trim()) pages.push(text.trim());
+    }
+    return { title: filename.replace(/\.pdf$/i, ''), content: pages.join('\n\n'), pageCount: pdf.numPages };
+  }
+
+  async function importSingleFile(file) {
+    const name = file.name;
+    let title = name.replace(/\.[^.]+$/, '');
+    let content = '';
+
+    if (name.endsWith('.pdf')) {
+      const buf = await file.arrayBuffer();
+      const parsed = await parsePDF(buf, name);
+      title = parsed.title;
+      content = parsed.content;
+      if (!content.trim()) { alert(name + ': PDF sin texto extraible (escaneado). Necesita OCR.'); return null; }
+    } else {
+      // TXT, MD, or any text file
+      content = await file.text();
+    }
+
+    // Create note
+    const note = notes.insert({ title, content, tags: [], createdAt: Date.now(), updatedAt: Date.now() });
+    bm25.addDocument('notes', note._id, title + ' ' + content);
+
+    // Index embedding
+    if (embedder && content.length > 0) {
+      // For long docs, embed first 1000 chars (model context limit)
+      const embedText = (title + ' ' + content).slice(0, 1000);
+      const vec = await embed(embedText);
+      if (vec) vecStore.set('notes', note._id, vec, { title, preview: content.slice(0, 100) });
+    }
+
+    return note;
+  }
+
+  window.importFile = async function(event) {
+    const files = Array.from(event.target.files);
+    if (!files.length) return;
+
+    let imported = 0;
+    for (const file of files) {
+      try {
+        const note = await importSingleFile(file);
+        if (note) imported++;
+      } catch (e) {
+        console.error('Import error:', file.name, e);
+      }
+    }
+
+    if (imported > 0) {
+      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await adapter.persist();
+      renderNoteList(); updateStats();
+      // Extract graph for imported notes (async)
+      if (generator) {
+        const recent = notes.find({}).sort({ createdAt: -1 }).limit(imported).toArray();
+        for (const n of recent) {
+          extractGraph(n._id, (n.title||'') + ' ' + n.content).catch(() => {});
+        }
+      }
+    }
+
+    alert(imported + ' archivo' + (imported !== 1 ? 's' : '') + ' importado' + (imported !== 1 ? 's' : ''));
+    event.target.value = '';
+  };
+
+  window.dropFiles = async function(event) {
+    event.preventDefault();
+    event.currentTarget.style.background = '';
+    const files = Array.from(event.dataTransfer.files).filter(f =>
+      f.name.endsWith('.pdf') || f.name.endsWith('.txt') || f.name.endsWith('.md')
+    );
+    if (!files.length) { alert('Solo PDF, TXT, o MD'); return; }
+
+    let imported = 0;
+    for (const file of files) {
+      try {
+        const note = await importSingleFile(file);
+        if (note) imported++;
+      } catch (e) { console.error('Drop import error:', file.name, e); }
+    }
+
+    if (imported > 0) {
+      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await adapter.persist();
+      renderNoteList(); updateStats();
+    }
+    if (imported > 0) alert(imported + ' archivo' + (imported !== 1 ? 's' : '') + ' importado' + (imported !== 1 ? 's' : ''));
+  };
 
   // ── Export/Import ────────────────────────────────────
 

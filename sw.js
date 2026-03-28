@@ -3,7 +3,7 @@
  * Cachea: modelos HuggingFace, Transformers.js, ONNX Runtime, y la app.
  */
 
-const CACHE_NAME = 'notepad-cache-v4';
+const CACHE_NAME = 'notepad-cache-v5';
 
 // Archivos de la app que se pre-cachean en install
 const APP_FILES = [

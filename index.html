@@ -223,36 +223,53 @@
     loadLLM();
   }
 
-  async function loadEmbedder() {
-    setStatus('embed', 'loading', 'Embeddings...');
+  // Check if model files are already in Cache Storage
+  async function isModelCached(modelName) {
     try {
+      const cache = await caches.open('transformers-cache');
+      const keys = await cache.keys();
+      return keys.some(k => k.url.includes(modelName));
+    } catch { return false; }
+  }
+
+  async function loadEmbedder() {
+    const cached = await isModelCached('multilingual-e5-small');
+    setStatus('embed', 'loading', cached ? 'Cargando E5...' : 'Descargando E5...');
+    if (cached) document.getElementById('embed-progress').style.display = 'none';
+
+    try {
+      let downloadStarted = false;
       embedder = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small', {
         progress_callback: p => {
-          if (p.status === 'progress' && p.total) {
+          if (!cached && p.status === 'progress' && p.total) {
+            downloadStarted = true;
             document.getElementById('embed-fill').style.width = Math.round(p.loaded/p.total*100)+'%';
           }
         }
       });
-      setStatus('embed', 'ready', 'E5 ready');
+      setStatus('embed', 'ready', cached ? 'E5 (cache)' : 'E5 ready');
       document.getElementById('embed-progress').style.display = 'none';
       await indexMissingNotes();
     } catch (e) { setStatus('embed', 'error', 'E5 error'); console.error(e); }
   }
 
   async function loadLLM() {
-    setStatus('llm', 'loading', 'LLM...');
+    const cached = await isModelCached('Qwen3-0.6B-ONNX');
+    const device = navigator.gpu ? 'webgpu' : 'wasm';
+    const dtype = device === 'webgpu' ? 'q4f16' : 'q4';
+    setStatus('llm', 'loading', cached ? 'Cargando Qwen3...' : 'Descargando Qwen3...');
+    if (cached) document.getElementById('llm-progress').style.display = 'none';
+
     try {
-      const device = navigator.gpu ? 'webgpu' : 'wasm';
-      const dtype = device === 'webgpu' ? 'q4f16' : 'q4';
       generator = await pipeline('text-generation', 'onnx-community/Qwen3-0.6B-ONNX', {
         device, dtype,
         progress_callback: p => {
-          if (p.status === 'progress' && p.total) {
+          if (!cached && p.status === 'progress' && p.total) {
             document.getElementById('llm-fill').style.width = Math.round(p.loaded/p.total*100)+'%';
           }
         }
       });
-      setStatus('llm', 'ready', `Qwen3 (${device})`);
+      setStatus('llm', 'ready', cached ? `Qwen3 (cache/${device})` : `Qwen3 (${device})`);
       document.getElementById('llm-progress').style.display = 'none';
     } catch (e) { setStatus('llm', 'error', 'LLM error'); console.error(e); }
   }

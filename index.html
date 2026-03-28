@@ -185,6 +185,9 @@
     </div>
     <div style="padding:6px 10px;border-bottom:1px solid var(--border);display:flex;gap:6px">
       <button class="btn btn-sm" onclick="newNote()">+ Nueva</button>
+      <button class="btn btn-sm btn-outline" onclick="exportData()">Exportar</button>
+      <button class="btn btn-sm btn-outline" onclick="document.getElementById('import-file').click()">Importar</button>
+      <input type="file" id="import-file" accept=".json" style="display:none" onchange="importData(event)" />
     </div>
     <div class="note-list" id="note-list"><div class="empty">Crea tu primera nota</div></div>
   </div>
@@ -272,13 +275,14 @@
         r.onupgradeneeded = () => r.result.createObjectStore('data');
         r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
       });
+      // Load all data in a single transaction (fixes N+1 query issue)
       const tx = this._db.transaction('data', 'readonly');
       const st = tx.objectStore('data');
-      const keys = await new Promise(r => { const q = st.getAllKeys(); q.onsuccess = () => r(q.result); });
-      for (const k of keys) {
-        const v = await new Promise(r => { const q = this._db.transaction('data','readonly').objectStore('data').get(k); q.onsuccess = () => r(q.result); });
-        this._cache.set(k, v);
-      }
+      const [keys, values] = await Promise.all([
+        new Promise(r => { const q = st.getAllKeys(); q.onsuccess = () => r(q.result); }),
+        new Promise(r => { const q = st.getAll(); q.onsuccess = () => r(q.result); }),
+      ]);
+      for (let i = 0; i < keys.length; i++) this._cache.set(keys[i], values[i]);
     }
     readJson(k) { return this._cache.get('json:'+k) ?? null; }
     writeJson(k,v) { this._cache.set('json:'+k, v); }
@@ -524,14 +528,17 @@ Texto: ${text.slice(0, 500)}`,
     if (!generator) throw new Error('LLM no cargado');
     const messages = [
       { role: 'system', content: opts.system || 'Eres un asistente util. Responde de forma concisa.' },
-      { role: 'user', content: prompt },
+      { role: 'user', content: prompt + '\n/no_think' },
     ];
     const output = await generator(messages, {
       max_new_tokens: opts.maxTokens || 256,
       do_sample: false,
       temperature: 0.7,
     });
-    return output[0].generated_text.at(-1).content;
+    let result = output[0].generated_text.at(-1).content;
+    // Strip any think blocks that leaked through
+    result = result.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    return result;
   }
 
   window.toggleThinking = function() {
@@ -893,6 +900,18 @@ Texto: ${text.slice(0, 500)}`,
 
   window.deleteNote = function() {
     if (!currentNoteId || !confirm('Eliminar?')) return;
+    // Clean graph data for this note
+    const noteEdges = graphEdges.find({ noteId: currentNoteId }).toArray();
+    for (const e of noteEdges) graphEdges.removeById(e._id);
+    // Remove note from entity noteIds, delete orphan entities
+    const allNodes = graphNodes.find({}).toArray();
+    for (const node of allNodes) {
+      if (node.noteIds && node.noteIds.includes(currentNoteId)) {
+        const remaining = node.noteIds.filter(id => id !== currentNoteId);
+        if (remaining.length === 0) { graphNodes.removeById(node._id); }
+        else { graphNodes.update({ _id: node._id }, { $set: { noteIds: remaining } }); }
+      }
+    }
     notes.removeById(currentNoteId);
     bm25.removeDocument('notes', currentNoteId);
     vecStore.remove('notes', currentNoteId);
@@ -950,9 +969,15 @@ Texto: ${text.slice(0, 500)}`,
     }
     await adapter.persist();
 
-    // Extract graph entities (async, non-blocking)
-    if (generator && content.length > 20) {
-      extractGraph(currentNoteId, (title||'') + ' ' + content).catch(() => {});
+    // Extract graph entities (throttled: only if content changed significantly)
+    if (generator && content.length > 50 && !aiGenerating) {
+      const key = '_lastExtract_' + currentNoteId;
+      const lastLen = window[key] || 0;
+      // Only re-extract if content grew by 30+ chars (avoids re-extracting on every keystroke)
+      if (Math.abs(content.length - lastLen) > 30) {
+        window[key] = content.length;
+        extractGraph(currentNoteId, (title||'') + ' ' + content).catch(() => {});
+      }
     }
     const words = content.split(/\s+/).filter(Boolean).length;
     document.getElementById('editor-footer-left').textContent = 'Guardada: ' + new Date().toLocaleTimeString();
@@ -977,17 +1002,14 @@ Texto: ${text.slice(0, 500)}`,
         const noteIds = new Set();
         // Get notes from entities
         for (const item of subgraph) {
-          if (item.entity) {
-            const node = graphNodes.findOne({ name: item.entity?.toLowerCase() || item.entity });
+          const names = [
+            item.entity ? item.entity.toLowerCase() : null,
+            item.from || null,
+            item.to || null,
+          ].filter(Boolean);
+          for (const name of names) {
+            const node = graphNodes.findOne({ name });
             if (node?.noteIds) node.noteIds.forEach(id => noteIds.add(id));
-          }
-          if (item.from) {
-            const fromNode = graphNodes.findOne({ name: item.from });
-            if (fromNode?.noteIds) fromNode.noteIds.forEach(id => noteIds.add(id));
-          }
-          if (item.to) {
-            const toNode = graphNodes.findOne({ name: item.to });
-            if (toNode?.noteIds) toNode.noteIds.forEach(id => noteIds.add(id));
           }
         }
         for (const id of noteIds) {
@@ -1056,6 +1078,58 @@ Texto: ${text.slice(0, 500)}`,
   }
   // esc defined above
   function timeAgo(t) { const d=Date.now()-t; return d<60000?'ahora':d<3600000?Math.floor(d/60000)+'m':d<86400000?Math.floor(d/3600000)+'h':Math.floor(d/86400000)+'d'; }
+
+  // ── Export/Import ────────────────────────────────────
+
+  window.exportData = function() {
+    const data = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      notes: notes.find({}).toArray(),
+      graphNodes: graphNodes.find({}).toArray(),
+      graphEdges: graphEdges.find({}).toArray(),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `notepad-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  window.importData = async function(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!data.notes || !Array.isArray(data.notes)) throw new Error('Formato invalido');
+
+      let imported = 0;
+      for (const note of data.notes) {
+        if (!notes.findById(note._id)) {
+          notes.insert(note);
+          bm25.addDocument('notes', note._id, (note.title||'')+' '+(note.content||''));
+          if (embedder && note.content) {
+            const vec = await embed((note.title||'')+' '+note.content);
+            if (vec) vecStore.set('notes', note._id, vec, { title: note.title, preview: (note.content||'').slice(0,100) });
+          }
+          imported++;
+        }
+      }
+      if (data.graphNodes) for (const n of data.graphNodes) { if (!graphNodes.findById(n._id)) try { graphNodes.insert(n); } catch {} }
+      if (data.graphEdges) for (const e of data.graphEdges) { if (!graphEdges.findById(e._id)) try { graphEdges.insert(e); } catch {} }
+
+      db.flush(); bm25.save(adapter, 'notes'); vecStore.flush();
+      await adapter.persist();
+      renderNoteList(); updateStats();
+      alert('Importadas ' + imported + ' notas nuevas.');
+    } catch (e) {
+      alert('Error al importar: ' + e.message);
+    }
+    event.target.value = '';
+  };
 
   init();
 </script>

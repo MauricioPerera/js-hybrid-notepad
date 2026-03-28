@@ -11,6 +11,8 @@ const APP_FILES = [
   '/index.html',
   '/js-vector-store.js',
   '/js-doc-store.js',
+  '/manifest.json',
+  '/icon.svg',
 ];
 
 // Dominios que deben cachearse (modelos, libs, WASM)

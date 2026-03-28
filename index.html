@@ -127,7 +127,13 @@
         <div class="ai-panel hidden" id="ai-panel">
           <div class="ai-header">
             <h3>Qwen3 0.6B (local)</h3>
-            <button class="btn btn-sm btn-outline" onclick="toggleAI()">X</button>
+            <div style="display:flex;gap:6px;align-items:center">
+              <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer" title="Thinking mode: el modelo razona paso a paso antes de responder">
+                <input type="checkbox" id="ai-thinking" onchange="toggleThinking()" style="accent-color:var(--orange)" />
+                <span>Think</span>
+              </label>
+              <button class="btn btn-sm btn-outline" onclick="toggleAI()">X</button>
+            </div>
           </div>
           <div class="ai-actions">
             <button class="ai-btn" onclick="aiAction('summarize')" id="ai-summarize">Resumir</button>
@@ -161,6 +167,7 @@
   let db, notes, vecStore, bm25, hybrid;
   let currentNoteId = null, searchMode = 'hybrid', saveTimer = null;
   let aiGenerating = false;
+  let thinkingEnabled = false;
   const DIM = 384;
 
   // ── IndexedDB Adapter ─────────────────────────────────
@@ -295,39 +302,80 @@
     return output[0].generated_text.at(-1).content;
   }
 
+  window.toggleThinking = function() {
+    thinkingEnabled = document.getElementById('ai-thinking').checked;
+  };
+
   async function generateStream(prompt, outputEl, opts = {}) {
     if (!generator) { outputEl.textContent = 'LLM no cargado. Esperando descarga...'; return; }
     aiGenerating = true;
     outputEl.innerHTML = '<span class="generating">Generando...</span>';
 
+    const systemPrompt = opts.system || 'Eres un asistente util. Responde de forma concisa en el idioma del texto.';
     const messages = [
-      { role: 'system', content: opts.system || 'Eres un asistente util. Responde de forma concisa en el idioma del texto.' },
-      { role: 'user', content: prompt },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: thinkingEnabled ? prompt : prompt + '\n/no_think' },
     ];
 
-    let fullText = '';
+    let rawText = '';
+    let inThinkBlock = false;
+    let thinkContent = '';
+    let answerContent = '';
+
     const streamer = new TextStreamer(generator.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
-      callback_function: (text) => {
-        fullText += text;
-        outputEl.textContent = fullText;
+      callback_function: (token) => {
+        rawText += token;
+
+        // Parse think blocks
+        if (rawText.includes('<think>') && !rawText.includes('</think>')) {
+          inThinkBlock = true;
+          thinkContent = rawText.split('<think>').pop();
+          if (thinkingEnabled) {
+            outputEl.innerHTML = '<div style="color:var(--muted);font-style:italic;border-left:2px solid var(--orange);padding-left:8px;margin-bottom:8px">Pensando...\n' + esc(thinkContent) + '</div>';
+          } else {
+            outputEl.innerHTML = '<span class="generating">Pensando...</span>';
+          }
+        } else if (rawText.includes('</think>')) {
+          inThinkBlock = false;
+          const parts = rawText.split('</think>');
+          thinkContent = (parts[0] || '').replace('<think>', '').trim();
+          answerContent = (parts[1] || '').trim();
+
+          let html = '';
+          if (thinkingEnabled && thinkContent) {
+            html += '<details style="margin-bottom:8px"><summary style="font-size:11px;color:var(--orange);cursor:pointer">Razonamiento</summary><div style="color:var(--muted);font-style:italic;font-size:11px;padding:6px 0;white-space:pre-wrap">' + esc(thinkContent) + '</div></details>';
+          }
+          html += esc(answerContent);
+          outputEl.innerHTML = html;
+        } else if (!rawText.includes('<think>')) {
+          // No think block at all
+          outputEl.textContent = rawText;
+        }
         outputEl.scrollTop = outputEl.scrollHeight;
       },
     });
 
     try {
       await generator(messages, {
-        max_new_tokens: opts.maxTokens || 300,
+        max_new_tokens: thinkingEnabled ? (opts.maxTokens || 300) + 200 : (opts.maxTokens || 300),
         do_sample: false,
         streamer,
       });
     } catch (e) {
-      outputEl.textContent = fullText + '\n\n[Error: ' + e.message + ']';
+      outputEl.innerHTML += '\n\n<span style="color:var(--red)">[Error: ' + e.message + ']</span>';
     }
     aiGenerating = false;
-    return fullText;
+
+    // Return clean answer (without think block)
+    if (rawText.includes('</think>')) {
+      return rawText.split('</think>').pop().trim();
+    }
+    return rawText.replace(/<think>[\s\S]*<\/think>/g, '').trim();
   }
+
+  function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
   // ── AI Actions ────────────────────────────────────────
 
@@ -519,7 +567,7 @@
     const c = notes.count(), v = vecStore.count('notes');
     document.getElementById('header-stats').textContent = c + ' nota'+(c!==1?'s':'')+' | '+v+' emb';
   }
-  function esc(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+  // esc defined above
   function timeAgo(t) { const d=Date.now()-t; return d<60000?'ahora':d<3600000?Math.floor(d/60000)+'m':d<86400000?Math.floor(d/3600000)+'h':Math.floor(d/86400000)+'d'; }
 
   init();

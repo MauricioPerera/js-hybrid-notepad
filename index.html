@@ -3,13 +3,53 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hybrid Notepad — Offline AI + Semantic Search</title>
+<title>Hybrid Notepad — Offline AI Notepad with Semantic Search</title>
+<meta name="description" content="Free offline notepad with local AI (Qwen3), hybrid search (semantic + BM25), knowledge graph, markdown, and PDF import. Runs 100% in your browser. No backend, no API keys, no data leaves your device.">
+<meta name="keywords" content="notepad, AI, offline, semantic search, BM25, hybrid search, knowledge graph, markdown, PDF, PWA, Qwen3, embeddings, RAG, graph RAG, vanilla JS, zero dependencies">
+<meta name="author" content="Mauricio Perera">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://hybrid-notepad.pages.dev/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Hybrid Notepad — Offline AI Notepad with Semantic Search">
+<meta property="og:description" content="Notepad with local AI, hybrid search, knowledge graph, and markdown. 100% offline, runs in your browser. Zero backend, zero API keys.">
+<meta property="og:url" content="https://hybrid-notepad.pages.dev/">
+<meta property="og:site_name" content="Hybrid Notepad">
+<meta property="og:locale" content="es_ES">
+
+<!-- Twitter Card -->
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Hybrid Notepad — Offline AI + Semantic Search">
+<meta name="twitter:description" content="Free offline notepad with local AI (Qwen3), hybrid search, knowledge graph, and markdown. No backend, no API keys needed.">
+
+<!-- PWA -->
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#0a0a0a">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hybrid Notepad">
 <link rel="apple-touch-icon" href="/icon.svg">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Hybrid Notepad",
+  "description": "Offline AI notepad with hybrid search (semantic + BM25), knowledge graph, markdown, and PDF import. Runs 100% in the browser.",
+  "url": "https://hybrid-notepad.pages.dev/",
+  "applicationCategory": "ProductivityApplication",
+  "operatingSystem": "Any",
+  "browserRequirements": "Requires a modern browser with WebAssembly support",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "Mauricio Perera", "url": "https://www.linkedin.com/in/mauricioperera/" },
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "featureList": ["Offline AI (Qwen3-0.6B)", "Semantic search", "BM25 text search", "Hybrid search (RRF)", "Knowledge graph", "Markdown editor", "PDF import", "Folders", "Export/Import", "PWA installable"]
+}
+</script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {

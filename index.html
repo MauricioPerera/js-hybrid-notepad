@@ -88,10 +88,52 @@
   .btn-ai { background: var(--orange); }
   .empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
 
-  @media (max-width: 900px) {
-    .app { flex-direction: column; }
-    .panel-left { width: 100%; max-height: 35vh; border-right: none; border-bottom: 1px solid var(--border); }
-    .ai-panel { width: 100%; max-height: 40vh; border-left: none; border-top: 1px solid var(--border); }
+  /* Mobile: view-based navigation */
+  @media (max-width: 768px) {
+    body { height: 100vh; height: 100dvh; overflow: hidden; }
+    .header { padding: 8px 12px; gap: 6px; }
+    .header h1 { font-size: 13px; }
+    .progress-bar { width: 60px; }
+    .header-stats { font-size: 9px; }
+
+    .app { position: relative; }
+    .panel-left, .panel-right { position: absolute; inset: 0; width: 100%; border: none; background: var(--bg); transition: transform 0.25s ease; }
+
+    /* View states controlled by .mobile-view-* on .app */
+    .panel-left { z-index: 2; transform: translateX(0); }
+    .panel-right { z-index: 1; transform: translateX(100%); }
+    .app.mobile-view-editor .panel-left { transform: translateX(-100%); }
+    .app.mobile-view-editor .panel-right { transform: translateX(0); }
+
+    .search-input { font-size: 16px; padding: 10px 12px; } /* prevents iOS zoom */
+    .mode-btn { padding: 5px 10px; font-size: 11px; }
+    .note-item { padding: 12px 14px; }
+    .note-item .title { font-size: 14px; }
+    .note-item .preview { font-size: 12px; }
+
+    .editor-toolbar { padding: 8px 12px; }
+    .editor-title { font-size: 16px; } /* prevents iOS zoom */
+    .editor-content textarea { font-size: 16px; padding: 12px; } /* prevents iOS zoom */
+    .editor-footer { padding: 8px 12px; }
+
+    /* Back button visible on mobile */
+    .mobile-back { display: inline-flex !important; }
+
+    /* AI panel: full-screen overlay on mobile */
+    .ai-panel { position: fixed; inset: 0; width: 100%; z-index: 10; border: none; max-height: none; }
+    .ai-panel.hidden { display: none; }
+    .ai-output { font-size: 13px; }
+    .ai-input input { font-size: 16px; padding: 10px 12px; }
+    .ai-btn { padding: 6px 12px; font-size: 12px; }
+  }
+
+  @media (min-width: 769px) {
+    .mobile-back { display: none !important; }
+  }
+
+  .mobile-back {
+    background: none; border: none; color: var(--accent); font-size: 14px;
+    cursor: pointer; padding: 4px 8px; display: none;
   }
 </style>
 </head>
@@ -126,6 +168,7 @@
   <div class="panel panel-right">
     <div class="editor-area" id="editor-area" style="display:none">
       <div class="editor-toolbar">
+        <button class="mobile-back" onclick="mobileBack()">&#8592;</button>
         <input type="text" class="editor-title" id="editor-title" placeholder="Titulo..." oninput="onTitleChange()" />
         <button class="btn btn-sm btn-ai" onclick="toggleAI()">AI</button>
         <button class="btn btn-sm btn-outline btn-danger" onclick="deleteNote()">Eliminar</button>
@@ -134,9 +177,12 @@
         <div class="editor-content"><textarea id="editor-text" placeholder="Escribe aqui..." oninput="onTextChange()"></textarea></div>
         <div class="ai-panel hidden" id="ai-panel">
           <div class="ai-header">
-            <h3>Qwen3 0.6B (local)</h3>
+            <div style="display:flex;align-items:center;gap:6px">
+              <button class="mobile-back" onclick="toggleAI()">&#8592;</button>
+              <h3>Qwen3 0.6B (local)</h3>
+            </div>
             <div style="display:flex;gap:6px;align-items:center">
-              <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer" title="Thinking mode: el modelo razona paso a paso antes de responder">
+              <label style="font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer" title="Thinking mode">
                 <input type="checkbox" id="ai-thinking" onchange="toggleThinking()" style="accent-color:var(--orange)" />
                 <span>Think</span>
               </label>
@@ -692,6 +738,7 @@ Texto: ${text.slice(0, 500)}`,
     currentNoteId = null;
     document.getElementById('editor-area').style.display = 'none';
     document.getElementById('editor-empty').style.display = 'flex';
+    document.querySelector('.app').classList.remove('mobile-view-editor');
     renderNoteList(); updateStats();
   };
 
@@ -707,9 +754,17 @@ Texto: ${text.slice(0, 500)}`,
     document.getElementById('editor-footer-left').textContent = new Date(note.updatedAt).toLocaleString();
     document.getElementById('editor-footer-right').textContent = words + ' palabras';
     document.getElementById('ai-output').innerHTML = '<span style="color:var(--muted)">Selecciona una accion o pregunta sobre la nota.</span>';
+    // Mobile: switch to editor view
+    document.querySelector('.app').classList.add('mobile-view-editor');
     renderNoteList();
   }
   window.selectNote = selectNote;
+
+  window.mobileBack = function() {
+    document.querySelector('.app').classList.remove('mobile-view-editor');
+    currentNoteId = null;
+    renderNoteList();
+  };
 
   window.onTitleChange = function() { scheduleSave(); };
   window.onTextChange = function() { scheduleSave(); };

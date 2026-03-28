@@ -160,6 +160,13 @@
 <script src="js-vector-store.js"></script>
 <script src="js-doc-store.js"></script>
 
+<script>
+  // Register Service Worker for model caching
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+</script>
+
 <script type="module">
   import { pipeline, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
 
@@ -223,53 +230,48 @@
     loadLLM();
   }
 
-  // Check if model files are already in Cache Storage
-  async function isModelCached(modelName) {
-    try {
-      const cache = await caches.open('transformers-cache');
-      const keys = await cache.keys();
-      return keys.some(k => k.url.includes(modelName));
-    } catch { return false; }
-  }
-
   async function loadEmbedder() {
-    const cached = await isModelCached('multilingual-e5-small');
-    setStatus('embed', 'loading', cached ? 'Cargando E5...' : 'Descargando E5...');
-    if (cached) document.getElementById('embed-progress').style.display = 'none';
+    const t0 = performance.now();
+    setStatus('embed', 'loading', 'Cargando E5...');
 
     try {
-      let downloadStarted = false;
       embedder = await pipeline('feature-extraction', 'Xenova/multilingual-e5-small', {
         progress_callback: p => {
-          if (!cached && p.status === 'progress' && p.total) {
-            downloadStarted = true;
-            document.getElementById('embed-fill').style.width = Math.round(p.loaded/p.total*100)+'%';
+          if (p.status === 'progress' && p.total) {
+            const pct = Math.round(p.loaded / p.total * 100);
+            document.getElementById('embed-fill').style.width = pct + '%';
+            setStatus('embed', 'loading', `E5 ${pct}%`);
           }
         }
       });
-      setStatus('embed', 'ready', cached ? 'E5 (cache)' : 'E5 ready');
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+      const fromCache = parseFloat(elapsed) < 10; // cache loads in <10s, downloads take 30s+
+      setStatus('embed', 'ready', `E5 ${fromCache ? '(cache)' : 'ok'} ${elapsed}s`);
       document.getElementById('embed-progress').style.display = 'none';
       await indexMissingNotes();
     } catch (e) { setStatus('embed', 'error', 'E5 error'); console.error(e); }
   }
 
   async function loadLLM() {
-    const cached = await isModelCached('Qwen3-0.6B-ONNX');
+    const t0 = performance.now();
     const device = navigator.gpu ? 'webgpu' : 'wasm';
     const dtype = device === 'webgpu' ? 'q4f16' : 'q4';
-    setStatus('llm', 'loading', cached ? 'Cargando Qwen3...' : 'Descargando Qwen3...');
-    if (cached) document.getElementById('llm-progress').style.display = 'none';
+    setStatus('llm', 'loading', 'Cargando Qwen3...');
 
     try {
       generator = await pipeline('text-generation', 'onnx-community/Qwen3-0.6B-ONNX', {
         device, dtype,
         progress_callback: p => {
-          if (!cached && p.status === 'progress' && p.total) {
-            document.getElementById('llm-fill').style.width = Math.round(p.loaded/p.total*100)+'%';
+          if (p.status === 'progress' && p.total) {
+            const pct = Math.round(p.loaded / p.total * 100);
+            document.getElementById('llm-fill').style.width = pct + '%';
+            setStatus('llm', 'loading', `Qwen3 ${pct}%`);
           }
         }
       });
-      setStatus('llm', 'ready', cached ? `Qwen3 (cache/${device})` : `Qwen3 (${device})`);
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+      const fromCache = parseFloat(elapsed) < 15;
+      setStatus('llm', 'ready', `Qwen3 ${fromCache ? '(cache)' : 'ok'} ${elapsed}s ${device}`);
       document.getElementById('llm-progress').style.display = 'none';
     } catch (e) { setStatus('llm', 'error', 'LLM error'); console.error(e); }
   }

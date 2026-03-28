@@ -1,3 +1,4 @@
+(function() {
 /**
  * js-doc-store
  * Document database en vanilla JS — zero dependencias
@@ -2180,29 +2181,15 @@ function _base64urlToUint8(str) {
 // EXPORTS
 // ---------------------------------------------------------------------------
 
-module.exports = {
-  DocStore,
-  Collection,
-  Cursor,
-  AggregationPipeline,
-  HashIndex,
-  SortedIndex,
-  Table,
-  TEMPLATES,
-  createFromTemplate,
-  FileStorageAdapter,
-  MemoryStorageAdapter,
-  CloudflareKVAdapter,
-  EncryptedAdapter,
-  FieldCrypto,
-  Auth,
-  // Utils
-  matchFilter,
-  applyUpdate,
-  generateId,
-};
-
-// Browser globals
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    DocStore, Collection, Cursor, AggregationPipeline, HashIndex, SortedIndex,
+    Table, TEMPLATES, createFromTemplate,
+    FileStorageAdapter, MemoryStorageAdapter, CloudflareKVAdapter,
+    EncryptedAdapter, FieldCrypto, Auth,
+    matchFilter, applyUpdate, generateId,
+  };
+}
 if (typeof window !== 'undefined') {
   window.DocStore = DocStore;
   window.Collection = Collection;
@@ -2217,3 +2204,4 @@ if (typeof window !== 'undefined') {
   window.applyUpdate = applyUpdate;
   window.generateId = generateId;
 }
+})();

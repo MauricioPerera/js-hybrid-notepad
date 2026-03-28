@@ -1,3 +1,4 @@
+(function() {
 /**
  * js-vector-store
  * Port vanilla JS de php-vector-store (MauricioPerera)
@@ -2315,31 +2316,14 @@ class Reranker {
 // EXPORTS
 // ---------------------------------------------------------------------------
 
-module.exports = {
-  VectorStore,
-  QuantizedStore,
-  BinaryQuantizedStore,
-  PolarQuantizedStore,
-  IVFIndex,
-  BM25Index,
-  SimpleTokenizer,
-  HybridSearch,
-  Reranker,
-  FileStorageAdapter,
-  MemoryStorageAdapter,
-  CloudflareKVAdapter,
-  TopKHeap,
-  // Math utils
-  normalize,
-  cosineSim,
-  euclideanDist,
-  dotProduct,
-  manhattanDist,
-  computeScore,
-  matchFilter,
-};
-
-// Browser globals
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    VectorStore, QuantizedStore, BinaryQuantizedStore, PolarQuantizedStore,
+    IVFIndex, BM25Index, SimpleTokenizer, HybridSearch, Reranker,
+    FileStorageAdapter, MemoryStorageAdapter, CloudflareKVAdapter, TopKHeap,
+    normalize, cosineSim, euclideanDist, dotProduct, manhattanDist, computeScore, matchFilter,
+  };
+}
 if (typeof window !== 'undefined') {
   window.VectorStore = VectorStore;
   window.QuantizedStore = QuantizedStore;
@@ -2347,6 +2331,7 @@ if (typeof window !== 'undefined') {
   window.PolarQuantizedStore = PolarQuantizedStore;
   window.IVFIndex = IVFIndex;
   window.BM25Index = BM25Index;
+  window.SimpleTokenizer = SimpleTokenizer;
   window.HybridSearch = HybridSearch;
   window.Reranker = Reranker;
   window.MemoryStorageAdapter = MemoryStorageAdapter;
@@ -2356,3 +2341,4 @@ if (typeof window !== 'undefined') {
   window.computeScore = computeScore;
   window.matchFilter = matchFilter;
 }
+})();

@@ -1,43 +1,73 @@
 /**
- * Service Worker: cachea modelos de HuggingFace para uso offline.
- * Intercepta requests a huggingface.co y cdn-lfs, sirve desde cache si existe.
+ * Service Worker: cache completo para funcionamiento 100% offline.
+ * Cachea: modelos HuggingFace, Transformers.js, ONNX Runtime, y la app.
  */
 
-const CACHE_NAME = 'model-cache-v1';
-const HF_DOMAINS = ['huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs-us-1.huggingface.co'];
+const CACHE_NAME = 'notepad-cache-v2';
+
+// Archivos de la app que se pre-cachean en install
+const APP_FILES = [
+  '/',
+  '/index.html',
+  '/js-vector-store.js',
+  '/js-doc-store.js',
+];
+
+// Dominios que deben cachearse (modelos, libs, WASM)
+const CACHE_DOMAINS = [
+  'huggingface.co',
+  'cdn-lfs.huggingface.co',
+  'cdn-lfs-us-1.huggingface.co',
+  'cdn.jsdelivr.net',    // Transformers.js lib
+];
 
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(APP_FILES))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  // Limpiar caches viejos
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
 });
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Solo interceptar requests a HuggingFace
-  if (!HF_DOMAINS.some(d => url.hostname.includes(d))) return;
+  // Solo GET requests
+  if (event.request.method !== 'GET') return;
+
+  const isAppFile = url.origin === self.location.origin;
+  const isCacheDomain = CACHE_DOMAINS.some(d => url.hostname.includes(d));
+
+  if (!isAppFile && !isCacheDomain) return;
 
   event.respondWith(
     caches.open(CACHE_NAME).then(async (cache) => {
-      // Intentar servir desde cache
       const cached = await cache.match(event.request);
-      if (cached) {
-        return cached;
+      if (cached) return cached;
+
+      try {
+        const response = await fetch(event.request);
+        if (response.ok) {
+          cache.put(event.request, response.clone());
+        }
+        return response;
+      } catch (err) {
+        // Offline y no esta en cache — solo para app files, retornar index
+        if (isAppFile) {
+          const fallback = await cache.match('/index.html');
+          if (fallback) return fallback;
+        }
+        throw err;
       }
-
-      // No esta en cache — descargar y cachear
-      const response = await fetch(event.request);
-
-      // Solo cachear respuestas exitosas y archivos grandes (modelos)
-      if (response.ok && response.status === 200) {
-        // Clonar antes de cachear (el body solo se puede leer una vez)
-        cache.put(event.request, response.clone());
-      }
-
-      return response;
     })
   );
 });

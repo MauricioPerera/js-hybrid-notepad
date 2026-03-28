@@ -62,6 +62,29 @@
   .editor-content { flex: 1; display: flex; }
   .editor-content textarea { flex: 1; padding: 14px 18px; background: transparent; border: none; color: var(--text); font-size: 13px; line-height: 1.6; resize: none; font-family: inherit; }
   .editor-content textarea:focus { outline: none; }
+  .md-preview { flex: 1; padding: 14px 18px; overflow-y: auto; font-size: 13px; line-height: 1.7; display: none; }
+  .md-preview h1 { font-size: 1.6em; font-weight: 700; margin: 0.6em 0 0.3em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+  .md-preview h2 { font-size: 1.35em; font-weight: 600; margin: 0.5em 0 0.3em; border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+  .md-preview h3 { font-size: 1.15em; font-weight: 600; margin: 0.5em 0 0.2em; }
+  .md-preview h4 { font-size: 1em; font-weight: 600; margin: 0.4em 0 0.2em; }
+  .md-preview p { margin: 0.4em 0; }
+  .md-preview ul, .md-preview ol { margin: 0.4em 0; padding-left: 1.5em; }
+  .md-preview li { margin: 0.15em 0; }
+  .md-preview code { background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.9em; }
+  .md-preview pre { background: var(--surface2); padding: 10px 14px; border-radius: 6px; overflow-x: auto; margin: 0.5em 0; }
+  .md-preview pre code { background: none; padding: 0; }
+  .md-preview blockquote { border-left: 3px solid var(--accent); padding-left: 12px; margin: 0.5em 0; color: var(--muted); }
+  .md-preview a { color: var(--accent); text-decoration: none; }
+  .md-preview a:hover { text-decoration: underline; }
+  .md-preview strong { font-weight: 600; }
+  .md-preview em { font-style: italic; }
+  .md-preview hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+  .md-preview img { max-width: 100%; border-radius: 6px; }
+  .md-preview table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+  .md-preview th, .md-preview td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 12px; }
+  .md-preview th { background: var(--surface2); font-weight: 600; }
+  .md-preview .task-done { text-decoration: line-through; color: var(--muted); }
+  .md-preview .task-check { margin-right: 6px; }
   .editor-footer { padding: 6px 14px; border-top: 1px solid var(--border); font-size: 10px; color: var(--muted); display: flex; justify-content: space-between; }
 
   /* AI Panel */
@@ -170,11 +193,15 @@
       <div class="editor-toolbar">
         <button class="mobile-back" onclick="mobileBack()">&#8592;</button>
         <input type="text" class="editor-title" id="editor-title" placeholder="Titulo..." oninput="onTitleChange()" />
+        <button class="btn btn-sm btn-outline" id="preview-btn" onclick="togglePreview()">Vista</button>
         <button class="btn btn-sm btn-ai" onclick="toggleAI()">AI</button>
         <button class="btn btn-sm btn-outline btn-danger" onclick="deleteNote()">Eliminar</button>
       </div>
       <div style="flex:1;display:flex;overflow:hidden">
-        <div class="editor-content"><textarea id="editor-text" placeholder="Escribe aqui..." oninput="onTextChange()"></textarea></div>
+        <div class="editor-content">
+          <textarea id="editor-text" placeholder="Escribe en Markdown..." oninput="onTextChange()"></textarea>
+          <div class="md-preview" id="md-preview"></div>
+        </div>
         <div class="ai-panel hidden" id="ai-panel">
           <div class="ai-header">
             <div style="display:flex;align-items:center;gap:6px">
@@ -581,6 +608,140 @@ Texto: ${text.slice(0, 500)}`,
 
   function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+  // ── Markdown ─────────────────────────────────────────
+
+  let previewMode = false;
+
+  /** Vanilla Markdown parser — no dependencies */
+  function renderMarkdown(md) {
+    if (!md) return '';
+    let html = md;
+
+    // Code blocks (``` ... ```)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+      `<pre><code>${esc(code.trim())}</code></pre>`
+    );
+
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Images before links
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />');
+
+    // Links
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // Split into lines for block-level parsing
+    const lines = html.split('\n');
+    const out = [];
+    let inList = false, listType = '', inTable = false, tableRows = [];
+
+    function flushTable() {
+      if (tableRows.length < 2) { out.push(...tableRows.map(r => `<p>${r}</p>`)); tableRows = []; inTable = false; return; }
+      let t = '<table>';
+      tableRows.forEach((row, i) => {
+        if (i === 1 && /^[\s|:-]+$/.test(row)) return; // separator row
+        const tag = i === 0 ? 'th' : 'td';
+        const cells = row.split('|').filter(c => c.trim() !== '');
+        t += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+      });
+      t += '</table>';
+      out.push(t);
+      tableRows = []; inTable = false;
+    }
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // Table detection
+      if (line.includes('|') && line.trim().startsWith('|')) {
+        if (!inTable) inTable = true;
+        tableRows.push(line);
+        continue;
+      } else if (inTable) { flushTable(); }
+
+      // HR
+      if (/^(---|\*\*\*|___)$/.test(line.trim())) { if (inList) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; } out.push('<hr>'); continue; }
+
+      // Headers
+      const hMatch = line.match(/^(#{1,6})\s+(.+)/);
+      if (hMatch) { if (inList) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; } const lvl = hMatch[1].length; out.push(`<h${lvl}>${inlineFormat(hMatch[2])}</h${lvl}>`); continue; }
+
+      // Blockquote
+      if (line.startsWith('> ')) { if (inList) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; } out.push(`<blockquote>${inlineFormat(line.slice(2))}</blockquote>`); continue; }
+
+      // Task list
+      const taskMatch = line.match(/^(\s*)[-*]\s+\[([ xX])\]\s+(.*)/);
+      if (taskMatch) {
+        if (!inList) { listType = 'ul'; out.push('<ul>'); inList = true; }
+        const checked = taskMatch[2] !== ' ';
+        out.push(`<li><input type="checkbox" class="task-check" disabled ${checked ? 'checked' : ''}><span class="${checked ? 'task-done' : ''}">${inlineFormat(taskMatch[3])}</span></li>`);
+        continue;
+      }
+
+      // Unordered list
+      const ulMatch = line.match(/^(\s*)[-*+]\s+(.*)/);
+      if (ulMatch) {
+        if (!inList || listType !== 'ul') { if (inList) out.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = 'ul'; out.push('<ul>'); inList = true; }
+        out.push(`<li>${inlineFormat(ulMatch[2])}</li>`);
+        continue;
+      }
+
+      // Ordered list
+      const olMatch = line.match(/^(\s*)\d+\.\s+(.*)/);
+      if (olMatch) {
+        if (!inList || listType !== 'ol') { if (inList) out.push(listType === 'ul' ? '</ul>' : '</ol>'); listType = 'ol'; out.push('<ol>'); inList = true; }
+        out.push(`<li>${inlineFormat(olMatch[2])}</li>`);
+        continue;
+      }
+
+      // Close list if not a list item
+      if (inList) { out.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+
+      // Empty line = paragraph break
+      if (line.trim() === '') { out.push(''); continue; }
+
+      // Regular paragraph
+      out.push(`<p>${inlineFormat(line)}</p>`);
+    }
+
+    if (inList) out.push(listType === 'ul' ? '</ul>' : '</ol>');
+    if (inTable) flushTable();
+
+    return out.join('\n');
+  }
+
+  function inlineFormat(text) {
+    return text
+      .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/~~(.+?)~~/g, '<del>$1</del>')
+      .replace(/==(.+?)==/g, '<mark>$1</mark>');
+  }
+
+  window.togglePreview = function() {
+    previewMode = !previewMode;
+    const textarea = document.getElementById('editor-text');
+    const preview = document.getElementById('md-preview');
+    const btn = document.getElementById('preview-btn');
+
+    if (previewMode) {
+      preview.innerHTML = renderMarkdown(textarea.value);
+      preview.style.display = 'block';
+      textarea.style.display = 'none';
+      btn.textContent = 'Editar';
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'white';
+    } else {
+      preview.style.display = 'none';
+      textarea.style.display = 'block';
+      btn.textContent = 'Vista';
+      btn.style.background = '';
+      btn.style.color = '';
+    }
+  };
+
   // ── AI Actions ────────────────────────────────────────
 
   window.toggleAI = function() {
@@ -748,6 +909,8 @@ Texto: ${text.slice(0, 500)}`,
     if (!note) return;
     document.getElementById('editor-title').value = note.title || '';
     document.getElementById('editor-text').value = note.content || '';
+    // Reset preview mode when switching notes
+    if (previewMode) togglePreview();
     document.getElementById('editor-area').style.display = 'flex';
     document.getElementById('editor-empty').style.display = 'none';
     const words = (note.content || '').split(/\s+/).filter(Boolean).length;
